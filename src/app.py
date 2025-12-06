@@ -1,7 +1,7 @@
 from functools import lru_cache
 from fastapi import FastAPI, Request, Depends
 from typing import Annotated
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, JSONResponse, RedirectResponse
 from .config import Settings
 
 app = FastAPI()
@@ -10,9 +10,12 @@ app = FastAPI()
 # VERIFY_TOKEN =  #should not be visible to everybody maybe using config would be better
 @lru_cache
 def get_settings():
-    return Settings()
+    return Settings() 
 
-
+@app.get("/")
+async def root():
+    # This redirects anyone visiting '/' straight to '/docs
+    return RedirectResponse(url="/docs")
 # Verify webhook endpoint
 @app.get("/webhook")
 def verify_webhook(
