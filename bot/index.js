@@ -1,46 +1,48 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
-// Configuration: Enter the Group ID here after you find it in the console
-// Example: '12036304567890@g.us'
-const ALLOWED_GROUP_ID = '120363422504843223@g.us'; 
+const ALLOWED_GROUP_ID = '120363422504843223@g.us';
 
-// Create the client (the bot)
-// LocalAuth saves the session so you don't have to scan the QR code every time
 const client = new Client({
-    authStrategy: new LocalAuth()
+  authStrategy: new LocalAuth({ clientId: 'bot1' })
 });
 
-// Event: Generate QR code for scanning
+// QR
 client.on('qr', (qr) => {
-    console.log('Scan this QR code with WhatsApp on your phone:');
-    qrcode.generate(qr, { small: true });
+  console.log('QR RECEIVED - scan with WhatsApp (Linked Devices).');
+  qrcode.generate(qr, { small: true });
 });
 
-// Event: Bot is ready
+// Ready
 client.on('ready', () => {
-    console.log('Client is ready!');
+  console.log('Client is ready!');
 });
 
-// Event: Message received
+// Useful: tells you why it disconnected
+client.on('disconnected', (reason) => {
+  console.log('Client was disconnected:', reason);
+});
+
+// Auth failures / session issues
+client.on('auth_failure', (msg) => {
+  console.log('AUTH FAILURE:', msg);
+});
+
+// Debug state changes (helps explain random logouts)
+client.on('change_state', (state) => {
+  console.log('STATE CHANGED:', state);
+});
+
 client.on('message', async (message) => {
-    // Log the Group ID so you can find it
-    console.log(`Message received from: ${message.from}`); 
-    console.log(`Content: ${message.body}`);
+  // Only groups you allow
+  if (message.from !== ALLOWED_GROUP_ID) return;
 
-    // --- SECURITY CHECK ---
-    // If an ALLOWED_GROUP_ID is set, ignore messages from everywhere else
-    if (ALLOWED_GROUP_ID !== 'YOUR_GROUP_ID_HERE' && message.from !== ALLOWED_GROUP_ID) {
-        return; // Stop execution here
-    }
+  console.log(`[${message.from}] ${message.body}`);
 
-    // Simple test - if the message is "!ping", reply with "pong"
-    if (message.body === '!ping') {
-        await message.reply('pong');
-    }
-    if (message.body === 'ben') {
-        await message.reply('kirk!');
-    }
+  const body = (message.body || '').trim();
+
+  if (body === '!ping') await message.reply('pong');
+  if (body === 'ben') await message.reply('kirk!');
 });
 
 // Initialize the client
