@@ -38,6 +38,9 @@ client.on('message', async (message) => {
     if (message.body === '!ping') {
         await message.reply('pong');
     }
+    if (message.body === 'ben') {
+        await message.reply('kirk!');
+    }
 });
 
 // Initialize the client
