@@ -3,7 +3,7 @@ const qrcode = require('qrcode-terminal');
 
 // Configuration: Enter the Group ID here after you find it in the console
 // Example: '12036304567890@g.us'
-const ALLOWED_GROUP_ID = 'YOUR_GROUP_ID_HERE'; 
+const ALLOWED_GROUP_ID = '120363422504843223@g.us'; 
 
 // Create the client (the bot)
 // LocalAuth saves the session so you don't have to scan the QR code every time
