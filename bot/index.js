@@ -1,6 +1,8 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
+const config = require('./config');
+
 const {
   insertRow,
   countMessages,
@@ -10,24 +12,17 @@ const {
   dbPathForChat,
   setIdentity,
   getIdentity,
+  listIdentities,
   relabelAuthorEverywhere
 } = require('./db');
 
-// Allowed groups
-const ALLOWED_GROUP_IDS = new Set([
-  '120363422504843223@g.us',
-]);
-
-// Only these IDs can run admin DM commands
-const ADMIN_DM_IDS = new Set([
-  '196099767820421@lid',
-  '243537614471375@lid',
-]);
+const ALLOWED_GROUP_IDS = new Set(config.ALLOWED_GROUP_IDS);
+const ADMIN_DM_IDS = new Set(config.ADMIN_DM_IDS);
 
 const nameCache = new Map();
 
 const client = new Client({
-  authStrategy: new LocalAuth({ clientId: 'bot1' })
+  authStrategy: new LocalAuth({ clientId: config.CLIENT_ID })
 });
 
 function stripSuffix(id) {
@@ -52,7 +47,7 @@ function isAdminDmSender(message) {
   return ADMIN_DM_IDS.has(message.from);
 }
 
-// Alias-first: if mapping exists, always prefer it (prevents name splits)
+// Alias-first: mapping wins if it exists (prevents name splits)
 async function resolveAuthorName(message) {
   const authorId = message.author || null;
   if (!authorId) return 'Unknown';
@@ -104,6 +99,7 @@ client.on('ready', () => {
   console.log('Client is ready!');
   console.log('Allowed groups:', Array.from(ALLOWED_GROUP_IDS));
   console.log('Admin DM IDs:', Array.from(ADMIN_DM_IDS));
+  console.log('Data dir:', config.DATA_DIR);
 });
 
 client.on('disconnected', (reason) => console.log('Client was disconnected:', reason));
@@ -124,10 +120,27 @@ client.on('message', async (message) => {
       return;
     }
 
+    if (body.startsWith('!aliases')) {
+      const parts = body.split(/\s+/);
+      const n = parseInt(parts[1] || '20', 10);
+      const limit = Number.isFinite(n) ? Math.min(Math.max(n, 1), 100) : 20;
+
+      try {
+        const rows = await listIdentities(limit);
+        if (!rows.length) {
+          await message.reply('No aliases saved yet.');
+          return;
+        }
+        const lines = rows.map(r => `${r.wa_id} -> ${r.label}`);
+        await message.reply(`📒 Aliases (latest ${rows.length}):\n` + lines.join('\n'));
+      } catch (e) {
+        console.error('listIdentities failed:', e);
+        await message.reply('Failed to list aliases (see server logs).');
+      }
+      return;
+    }
+
     if (body.startsWith('!alias ')) {
-      // Formats:
-      // 1) !alias Your Name
-      // 2) !alias 1960...@lid Your Name
       const parts = body.split(/\s+/);
 
       let targetId = message.from;
@@ -148,20 +161,18 @@ client.on('message', async (message) => {
         await message.reply(
           `Usage:\n` +
           `- !alias Your Name\n` +
-          `- !alias 1960...@lid Your Name`
+          `- !alias 1960...@lid Your Name\n` +
+          `- !aliases [N]`
         );
         return;
       }
 
       try {
-        // 1) Save mapping for future resolution
         await setIdentity(targetId, label);
 
-        // 2) Update past rows everywhere so ranks/sample won’t split
         const results = await relabelAuthorEverywhere(targetId, label);
         const totalChanged = results.reduce((sum, r) => sum + (r.changed || 0), 0);
 
-        // Clear cache for that id (so new messages use new label immediately)
         nameCache.delete(targetId);
 
         await message.reply(
@@ -176,7 +187,7 @@ client.on('message', async (message) => {
       return;
     }
 
-    return; // ignore other DMs
+    return;
   }
 
   // ---------------------------

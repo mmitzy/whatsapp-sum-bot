@@ -1,8 +1,9 @@
 const path = require('path');
 const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
+const config = require('./config');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = config.DATA_DIR;
 
 // Per-group DB cache
 const groupDbCache = new Map();
@@ -20,7 +21,7 @@ function dbPathForChat(chatId) {
 }
 
 function identityDbPath() {
-  return path.join(DATA_DIR, `identities.sqlite`);
+  return path.join(DATA_DIR, config.IDENTITIES_DB_FILE);
 }
 
 // ---- Group DB schema ----
@@ -227,16 +228,38 @@ function getIdentity(waId) {
   });
 }
 
+function listIdentities(limit = 20) {
+  const db = getIdentityDb();
+  const lim = Math.max(1, Math.min(parseInt(limit || 20, 10), 100));
+
+  return new Promise((resolve, reject) => {
+    db.all(
+      `
+      SELECT wa_id, label, updated_ts
+      FROM identities
+      ORDER BY updated_ts DESC
+      LIMIT ?
+      `,
+      [lim],
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      }
+    );
+  });
+}
+
 /**
- * ✅ Update ALL group DBs: set author_name = label where author_id = waId
- * This fixes history so ranks/sample won't split for old rows.
+ * Update ALL group DBs: set author_name = label where author_id = waId
  */
 function relabelAuthorEverywhere(waId, label) {
   ensureDataDir();
 
+  const identityFile = config.IDENTITIES_DB_FILE;
+
   const files = fs
     .readdirSync(DATA_DIR)
-    .filter(f => f.endsWith('.sqlite') && f !== 'identities.sqlite')
+    .filter(f => f.endsWith('.sqlite') && f !== identityFile)
     .map(f => path.join(DATA_DIR, f));
 
   const updates = files.map(filePath => {
@@ -269,5 +292,6 @@ module.exports = {
   dbPathForChat,
   setIdentity,
   getIdentity,
+  listIdentities,
   relabelAuthorEverywhere
 };
