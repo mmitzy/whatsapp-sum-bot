@@ -210,3 +210,8 @@ __marimo__/
 # node
 node_modules
 package*
+
+# JavaScript
+
+# DB
+data/
