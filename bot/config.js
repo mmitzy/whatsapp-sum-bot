@@ -3,7 +3,7 @@ const path = require('path');
 module.exports = {
   // Allowed group IDs, comma-separated
   // Example: "120363...@g.us,120363...@g.us"
-  ALLOWED_GROUP_IDS: (process.env.ALLOWED_GROUP_IDS || '120363422504843223@g.us')
+  ALLOWED_GROUP_IDS: (process.env.ALLOWED_GROUP_IDS || '120363422504843223@g.us,120363048222575013@g.us')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean),

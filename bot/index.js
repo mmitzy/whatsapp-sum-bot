@@ -1,3 +1,4 @@
+// bot/index.js
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
@@ -47,19 +48,35 @@ function isAdminDmSender(message) {
   return ADMIN_DM_IDS.has(message.from);
 }
 
-// Alias-first: mapping wins if it exists (prevents name splits)
-async function resolveAuthorName(message) {
-  const authorId = message.author || null;
-  if (!authorId) return 'Unknown';
+/**
+ * In a group:
+ *  - message.from   = group id (...@g.us)
+ *  - message.author = sender id (often ...@lid, sometimes ...@c.us)
+ * In DMs:
+ *  - message.from is the other party id
+ */
+function getSenderId(message) {
+  if (message.from.endsWith('@g.us')) return message.author || null;
+  return message.from || null;
+}
 
-  if (nameCache.has(authorId)) return nameCache.get(authorId);
+/**
+ * Alias-first: mapping wins if it exists (prevents name splits)
+ * We use identities table keyed by WA id:
+ *   wa_id = "<senderId>" (e.g. 1960...@lid)
+ */
+async function resolveAuthorName(message) {
+  const senderId = getSenderId(message);
+  if (!senderId) return 'Unknown';
+
+  if (nameCache.has(senderId)) return nameCache.get(senderId);
 
   // 1) Manual mapping first (canonical)
   try {
-    const mapped = await getIdentity(authorId);
+    const mapped = await getIdentity(senderId);
     if (mapped && mapped.trim()) {
       const clean = mapped.trim();
-      nameCache.set(authorId, clean);
+      nameCache.set(senderId, clean);
       return clean;
     }
   } catch (e) {
@@ -76,7 +93,7 @@ async function resolveAuthorName(message) {
       '';
 
     if (name) {
-      nameCache.set(authorId, name);
+      nameCache.set(senderId, name);
       return name;
     }
   } catch {
@@ -84,9 +101,15 @@ async function resolveAuthorName(message) {
   }
 
   // 3) Friendly alias fallback
-  const alias = makeFriendlyAliasFromId(authorId);
-  nameCache.set(authorId, alias);
+  const alias = makeFriendlyAliasFromId(senderId);
+  nameCache.set(senderId, alias);
   return alias;
+}
+
+function sanitizeLabel(label) {
+  const s = String(label || '').trim();
+  if (!s) return null;
+  return s.replace(/\s+/g, ' ').slice(0, 40);
 }
 
 // QR
@@ -107,12 +130,17 @@ client.on('auth_failure', (msg) => console.log('AUTH FAILURE:', msg));
 client.on('change_state', (state) => console.log('STATE CHANGED:', state));
 
 client.on('message', async (message) => {
+  /* turn on is you want to add a new gc to allowed list
+  if (message.from.endsWith('@g.us')) {
+    console.log('GROUP ID:', message.from);
+  }*/
   const body = (message.body || '').trim();
 
   // ---------------------------
-  // ADMIN COMMANDS (DM ONLY + ADMIN ID ONLY)
+  // DM COMMANDS
   // ---------------------------
   if (isDm(message)) {
+    // Admin-only DM commands
     if (!isAdminDmSender(message)) return;
 
     if (body === '!myid') {
@@ -140,30 +168,68 @@ client.on('message', async (message) => {
       return;
     }
 
+    /**
+     * ADMIN-ONLY:
+     * !alias <lid_or_cus> <name>
+     * Example:
+     *   !alias 196099767820421@lid Sibo
+     */
+
+    if (body.startsWith('!sample')) {
+    const parts = body.split(/\s+/);
+    const n = parseInt(parts[1] || '5', 10);
+    const limit = Number.isFinite(n) ? Math.min(Math.max(n, 1), 20) : 5;
+
+    try {
+      const rows = await getLastRows(message.from, limit);
+      if (!rows.length) return void (await message.reply('No stored rows yet.'));
+
+      const lines = rows
+        .reverse()
+        .map(r => {
+          const preview = (r.body || '').replace(/\s+/g, ' ').slice(0, 80);
+          const media = r.entry_type === 'media' ? ` [media:${r.media_type || '?'}]` : '';
+          return `- ${r.who}: (${r.entry_type})${media} ${preview}`;
+        })
+        .join('\n');
+
+      await message.reply(`🧪 Sample (last ${rows.length} rows):\n${lines}`);
+    } catch (e) {
+      console.error('getLastRows failed:', e);
+      await message.reply('Failed to sample rows.');
+    }
+    return;
+  }
+
+    if (body === '!count') {
+    try {
+      const cnt = await countMessages(message.from);
+      await message.reply(`Stored rows (excluding commands): ${cnt}`);
+    } catch (e) {
+      console.error('countMessages failed:', e);
+      await message.reply('Failed to count (see server logs).');
+    }
+    return;
+  }
+
     if (body.startsWith('!alias ')) {
       const parts = body.split(/\s+/);
+      const targetId = (parts[1] || '').trim();
+      const labelRaw = parts.slice(2).join(' ');
+      const label = sanitizeLabel(labelRaw);
 
-      let targetId = message.from;
-      let label = '';
-
-      const maybeId = parts[1] || '';
-      const looksLikeId = maybeId.includes('@');
-
-      if (looksLikeId) {
-        targetId = maybeId;
-        label = parts.slice(2).join(' ');
-      } else {
-        label = parts.slice(1).join(' ');
-      }
-
-      label = (label || '').trim();
-      if (!label) {
+      if (!targetId || !label) {
         await message.reply(
           `Usage:\n` +
-          `- !alias Your Name\n` +
-          `- !alias 1960...@lid Your Name\n` +
-          `- !aliases [N]`
+          `- !alias <wa_id> <name>\n` +
+          `Example: !alias 1960...@lid Sibo`
         );
+        return;
+      }
+
+      // enforce "admin-only if targeting someone":
+      if (!targetId.includes('@') || (!targetId.endsWith('@lid') && !targetId.endsWith('@c.us'))) {
+        await message.reply('❌ wa_id must end with @lid or @c.us');
         return;
       }
 
@@ -198,15 +264,46 @@ client.on('message', async (message) => {
 
   // Commands first (don’t insert)
   if (body === '!ping') return void (await message.reply('pong'));
-  if (body === 'ben') return void (await message.reply('kirk!'));
+  if (body === '!ben') return void (await message.reply('kirk!'));
 
-  if (body === '!count') {
+  /**
+   * EVERYONE (GROUP):
+   * !alias <name>
+   *
+   * Saves alias for the SENDER ONLY (author id from the group message).
+   * This prevents abuse like setting alias for other people.
+   */
+  if (body.startsWith('!alias ')) {
+    const labelRaw = body.slice('!alias '.length);
+    const label = sanitizeLabel(labelRaw);
+
+    if (!label) {
+      await message.reply(`Usage: !alias <your name>\nExample: !alias Sibo`);
+      return;
+    }
+
+    const senderId = getSenderId(message); // group sender id
+    if (!senderId) {
+      await message.reply("Couldn't detect your sender id.");
+      return;
+    }
+
     try {
-      const cnt = await countMessages(message.from);
-      await message.reply(`Stored rows (excluding commands): ${cnt}`);
+      await setIdentity(senderId, label);
+
+      // update history across all group DBs so ranks/sample won't split
+      const results = await relabelAuthorEverywhere(senderId, label);
+      const totalChanged = results.reduce((sum, r) => sum + (r.changed || 0), 0);
+
+      nameCache.delete(senderId);
+
+      await message.reply(
+        `✅ Alias saved for you: ${label}\n` +
+        `Rows updated across group DBs: ${totalChanged}`
+      );
     } catch (e) {
-      console.error('countMessages failed:', e);
-      await message.reply('Failed to count (see server logs).');
+      console.error('group alias failed:', e);
+      await message.reply('Failed to save alias (see server logs).');
     }
     return;
   }
@@ -228,37 +325,11 @@ client.on('message', async (message) => {
     return;
   }
 
-  if (body.startsWith('!sample')) {
-    const parts = body.split(/\s+/);
-    const n = parseInt(parts[1] || '5', 10);
-    const limit = Number.isFinite(n) ? Math.min(Math.max(n, 1), 20) : 5;
-
-    try {
-      const rows = await getLastRows(message.from, limit);
-      if (!rows.length) return void (await message.reply('No stored rows yet.'));
-
-      const lines = rows
-        .reverse()
-        .map(r => {
-          const preview = (r.body || '').replace(/\s+/g, ' ').slice(0, 80);
-          const media = r.entry_type === 'media' ? ` [media:${r.media_type || '?'}]` : '';
-          return `- ${r.who}: (${r.entry_type})${media} ${preview}`;
-        })
-        .join('\n');
-
-      await message.reply(`🧪 Sample (last ${rows.length} rows):\n${lines}`);
-    } catch (e) {
-      console.error('getLastRows failed:', e);
-      await message.reply('Failed to sample rows.');
-    }
-    return;
-  }
-
   // Store non-command messages
   const ts = message.timestamp;
   const baseId = message.id._serialized;
 
-  const authorId = message.author || null;
+  const authorId = getSenderId(message); // use same logic as aliasing
   const authorName = await resolveAuthorName(message);
 
   console.log(`[${message.from}] ${body}`);

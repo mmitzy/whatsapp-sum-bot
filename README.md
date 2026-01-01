@@ -8,12 +8,10 @@ run it using: node index.js
 group commands:
 
 !ping - Test command → replies pong
-ben - Replies kirk!
-!count - Number of stored messages (excluding commands)
+!ben - Replies kirk!
 !ranks - Top 10 senders by stored messages
 !ranks N - Top N senders (max 30)
-!sample	Show - last 5 stored entries
-!sample N - Show last N stored entries (max 20)
+!alias Your Name	Alias your own WhatsApp ID
 
 Notes:
 
@@ -26,8 +24,10 @@ Group must be in ALLOWED_GROUP_IDS
 
 dm admin only commands: 
 
+!sample	Show - last 5 stored entries
+!sample N - Show last N stored entries (max 20)
+!count - Number of stored messages (excluding commands)
 !myid	Shows your WhatsApp ID
-!alias Your Name	Alias your own WhatsApp ID
 !alias <lid> Name	Alias a specific WhatsApp ID
 !aliases	Show last 20 aliases
 !aliases N	Show last N aliases (max 100)
