@@ -26,87 +26,134 @@ module.exports = {
 
   // ✅ Help text lives here (single source of truth)
   COMMANDS: [
-    {
-      cmd: '!help',
-      scope: 'Group',
-      desc: 'DMs you the full list of commands and what they do.'
-    },
-    {
-      cmd: '!alias <name>',
-      scope: 'Group',
-      desc: 'Set your alias (nickname) for this bot.'
-    },
-    {
-      cmd: '!ranks [N]',
-      scope: 'Group',
-      desc: 'Shows top senders by stored messages (default 10).'
-    },
-    {
-      cmd: '!count',
-      scope: 'Group',
-      desc: 'Shows how many stored (non-command) messages exist for this group.'
-    },
-    {
-      cmd: '!sum <interval>',
-      scope: 'Group',
-      desc: 'Print messages from last interval (e.g. 10m, 1h30m). Capped at 24h.'
-    },
-    {
-      cmd: '!ghosts',
-      scope: 'Group',
-      desc: 'Shows members who were silent for 7+ days.'
-    },
-    {
-      cmd: '!quote <alias>',
-      scope: 'Group',
-      desc: 'Random quote from a user with this exact alias.'
-    },
-    {
-      cmd: '!streaks',
-      scope: 'Group',
-      desc: 'Consecutive-day streaks (must have messaged today to count).'
-    },
-    {
-      cmd: '!emojis',
-      scope: 'Group',
-      desc: 'Emoji “personality” per user (top emojis, last 30 days).'
-    },
-    {
-      cmd: '!joke <phrase>',
-      scope: 'Group',
-      desc: 'Save a phrase as an inside joke tracker.'
-    },
-    {
-      cmd: '!jokes',
-      scope: 'Group',
-      desc: 'Lists saved joke phrases + usage counts.'
-    },
+  {
+    cmd: '!help',
+    scope: 'Group',
+    desc: 'DMs you the full list of commands and what they do.'
+  },
+  {
+    cmd: '!alias <name>',
+    scope: 'Group',
+    desc: 'Set your alias (nickname) for this bot.'
+  },
+  {
+    cmd: '!ranks [N]',
+    scope: 'Group',
+    desc: 'Shows top senders by stored messages (default 10).'
+  },
+  {
+    cmd: '!count',
+    scope: 'Group',
+    desc: 'Shows how many stored (non-command) messages exist for this group.'
+  },
+  {
+    cmd: '!sum <interval>',
+    scope: 'Group',
+    desc: 'Print messages from last interval (e.g. 10m, 1h30m). Capped at 24h.'
+  },
+  {
+    cmd: '!ghosts',
+    scope: 'Group',
+    desc: 'Shows members who were silent for 7+ days.'
+  },
+  {
+    cmd: '!quote <alias>',
+    scope: 'Group',
+    desc: 'Random quote from a user with this exact alias.'
+  },
+  {
+    cmd: '!streaks',
+    scope: 'Group',
+    desc: 'Consecutive-day streaks (must have messaged today to count).'
+  },
+  {
+    cmd: '!emojis',
+    scope: 'Group',
+    desc: 'Emoji “personality” per user (top emojis, last 30 days).'
+  },
+  {
+    cmd: '!joke <phrase>',
+    scope: 'Group',
+    desc: 'Save a phrase as an inside joke tracker.'
+  },
+  {
+    cmd: '!jokes',
+    scope: 'Group',
+    desc: 'Lists saved joke phrases + usage counts.'
+  },
 
-    // Admin DM-only commands
-    {
-      cmd: '!myid',
-      scope: 'DM (Admin)',
-      desc: 'Prints your WhatsApp id (useful for admin setup).'
-    },
-    {
-      cmd: '!sample [N]',
-      scope: 'DM (Admin)',
-      desc: 'Shows a small sample of last stored messages (default 5).'
-    },
-    {
-      cmd: '!aliases [N]',
-      scope: 'DM (Admin)',
-      desc: 'Lists latest saved aliases (default 20).'
-    },
-    {
-      cmd: '!who <alias>',
-      scope: 'DM (Admin)',
-      desc: 'Finds the current author_id (lid/c.us) for an alias (exact match).'
-    },
-    {
-      cmd: '!alias <author_id> <name>',
-      scope: 'DM (Admin)',
-      desc: 'Force-set alias for a specific author_id and relabel history.'
-    }
+  // 🆕 Economy & games
+  {
+    cmd: '!balance',
+    scope: 'Group',
+    desc: 'Shows your current balance.'
+  },
+  {
+    cmd: '!daily',
+    scope: 'Group',
+    desc: 'Claim your daily reward (once every 24 hours).'
+  },
+  {
+    cmd: '!give <alias> <amount>',
+    scope: 'Group',
+    desc: 'Give money from your balance to another user.'
+  },
+  {
+    cmd: '!topbal',
+    scope: 'Group',
+    desc: 'Shows the richest users by balance.'
+  },
+  {
+    cmd: '!blackjack <bet>',
+    scope: 'Group',
+    desc: 'Start a blackjack game using your balance.'
+  },
+  {
+    cmd: '!hit',
+    scope: 'Group',
+    desc: 'Blackjack: draw another card.'
+  },
+  {
+    cmd: '!stand',
+    scope: 'Group',
+    desc: 'Blackjack: end your turn and let the dealer play.'
+  },
+  {
+    cmd: '!double',
+    scope: 'Group',
+    desc: 'Blackjack: double your bet, draw once, then stand.'
+  },
+
+  // Admin DM-only commands
+  {
+    cmd: '!myid',
+    scope: 'DM (Admin)',
+    desc: 'Prints your WhatsApp id (useful for admin setup).'
+  },
+  {
+    cmd: '!sample [N]',
+    scope: 'DM (Admin)',
+    desc: 'Shows a small sample of last stored messages (default 5).'
+  },
+  {
+    cmd: '!aliases [N]',
+    scope: 'DM (Admin)',
+    desc: 'Lists latest saved aliases (default 20).'
+  },
+  {
+    cmd: '!who <alias>',
+    scope: 'DM (Admin)',
+    desc: 'Finds the current author_id (lid/c.us) for an alias (exact match).'
+  },
+  {
+    cmd: '!alias <author_id> <name>',
+    scope: 'DM (Admin)',
+    desc: 'Force-set alias for a specific author_id and relabel history.'
+  },
+  {
+    cmd: '!give <alias> <amount>',
+    scope: 'DM (Admin)',
+    desc: 'Give balance to a user (admin mint).'
+  }
   ]
 };

@@ -29,6 +29,26 @@ function getDb() {
   const schemaSql = fs.readFileSync(schemaPath, 'utf8');
   db.exec(schemaSql);
 
+  // Lightweight migrations (schema.sql won't ALTER existing tables)
+  db.serialize(() => {
+    db.all(`PRAGMA table_info(identities)`, (err, cols) => {
+      if (err) {
+        console.error('PRAGMA table_info(identities) failed:', err);
+        return;
+      }
+      const names = new Set((cols || []).map(c => c.name));
+
+      // Add balance column if missing
+      if (!names.has('balance')) {
+        db.run(`ALTER TABLE identities ADD COLUMN balance INTEGER NOT NULL DEFAULT 0`);
+      }
+      // Add last_daily_ts column if missing
+      if (!names.has('last_daily_ts')) {
+        db.run(`ALTER TABLE identities ADD COLUMN last_daily_ts INTEGER`);
+      }
+    });
+  });
+
   return db;
 }
 
@@ -36,6 +56,17 @@ function getDb() {
 
 function insertRow(chatId, row) {
   const db = getDb();
+
+  // Ensure an identity row exists for this author so "give by alias" works reliably.
+  // This does NOT overwrite existing aliases.
+  if (row?.author_id && row?.author_name) {
+    const tsNow = Math.floor(Date.now() / 1000);
+    db.run(
+      `INSERT OR IGNORE INTO identities (author_id, label, updated_ts, balance, last_daily_ts)
+       VALUES (?, ?, ?, 0, NULL)`,
+      [row.author_id, String(row.author_name).trim() || row.author_id, tsNow]
+    );
+  }
 
   db.run(
     `INSERT OR IGNORE INTO messages
@@ -187,7 +218,6 @@ function getLastTsByAuthors(chatId, authorIds = []) {
   const ids = (authorIds || []).filter(Boolean);
   if (!ids.length) return Promise.resolve([]);
 
-  // Build (?,?,?,...) placeholders safely
   const placeholders = ids.map(() => '?').join(',');
   const params = [chatId, ...ids];
 
@@ -295,6 +325,189 @@ function getIdentity(authorId) {
       (err, row) => {
         if (err) return reject(err);
         resolve(row?.label || null);
+      }
+    );
+  });
+}
+
+// Ensure identity row exists (no overwrite). Useful for balance commands.
+function ensureIdentity(authorId, labelIfNew = null) {
+  const db = getDb();
+  const ts = Math.floor(Date.now() / 1000);
+  const label = (String(labelIfNew || '').trim() || authorId);
+
+  return new Promise((resolve, reject) => {
+    db.run(
+      `
+      INSERT OR IGNORE INTO identities (author_id, label, updated_ts, balance, last_daily_ts)
+      VALUES (?, ?, ?, 0, NULL)
+      `,
+      [authorId, label, ts],
+      (err) => {
+        if (err) return reject(err);
+        resolve(true);
+      }
+    );
+  });
+}
+
+function getBalance(authorId) {
+  const db = getDb();
+  return new Promise((resolve, reject) => {
+    db.get(
+      `SELECT balance FROM identities WHERE author_id = ?`,
+      [authorId],
+      (err, row) => {
+        if (err) return reject(err);
+        resolve(Number.isFinite(row?.balance) ? row.balance : 0);
+      }
+    );
+  });
+}
+
+function addBalance(authorId, delta) {
+  const db = getDb();
+  const d = parseInt(delta, 10);
+  if (!Number.isFinite(d)) return Promise.reject(new Error('delta must be int'));
+
+  return new Promise((resolve, reject) => {
+    db.run(
+      `UPDATE identities SET balance = balance + ? WHERE author_id = ?`,
+      [d, authorId],
+      function (err) {
+        if (err) return reject(err);
+        resolve({ changed: this.changes || 0 });
+      }
+    );
+  });
+}
+
+async function transferBalance(fromAuthorId, toAuthorId, amount) {
+  const db = getDb();
+  const amt = parseInt(amount, 10);
+  if (!Number.isFinite(amt) || amt <= 0) throw new Error('amount must be positive int');
+
+  // SQLite transaction
+  return new Promise((resolve, reject) => {
+    db.serialize(() => {
+      db.run('BEGIN IMMEDIATE TRANSACTION');
+
+      db.get(
+        `SELECT balance FROM identities WHERE author_id = ?`,
+        [fromAuthorId],
+        (err, row) => {
+          if (err) {
+            db.run('ROLLBACK');
+            return reject(err);
+          }
+
+          const bal = parseInt(row?.balance ?? 0, 10);
+          if (!Number.isFinite(bal) || bal < amt) {
+            db.run('ROLLBACK');
+            return resolve({ ok: false, reason: 'insufficient', balance: bal });
+          }
+
+          db.run(
+            `UPDATE identities SET balance = balance - ? WHERE author_id = ?`,
+            [amt, fromAuthorId],
+            (err2) => {
+              if (err2) {
+                db.run('ROLLBACK');
+                return reject(err2);
+              }
+
+              db.run(
+                `UPDATE identities SET balance = balance + ? WHERE author_id = ?`,
+                [amt, toAuthorId],
+                (err3) => {
+                  if (err3) {
+                    db.run('ROLLBACK');
+                    return reject(err3);
+                  }
+                  db.run('COMMIT', (err4) => {
+                    if (err4) {
+                      db.run('ROLLBACK');
+                      return reject(err4);
+                    }
+                    resolve({ ok: true, amount: amt, from_balance_before: bal });
+                  });
+                }
+              );
+            }
+          );
+        }
+      );
+    });
+  });
+}
+
+function claimDaily(authorId, nowTs, amount = 100) {
+  const db = getDb();
+  const now = parseInt(nowTs, 10);
+  const amt = parseInt(amount, 10);
+  if (!Number.isFinite(now) || !Number.isFinite(amt)) return Promise.reject(new Error('bad args'));
+
+  return new Promise((resolve, reject) => {
+    db.serialize(() => {
+      db.run('BEGIN IMMEDIATE TRANSACTION');
+
+      db.get(
+        `SELECT balance, last_daily_ts FROM identities WHERE author_id = ?`,
+        [authorId],
+        (err, row) => {
+          if (err) {
+            db.run('ROLLBACK');
+            return reject(err);
+          }
+
+          const last = parseInt(row?.last_daily_ts ?? 0, 10);
+          const can = !last || (now - last) >= 86400;
+          if (!can) {
+            const remaining = 86400 - (now - last);
+            db.run('ROLLBACK');
+            return resolve({ ok: false, remaining_sec: remaining, last_daily_ts: last, balance: row?.balance ?? 0 });
+          }
+
+          db.run(
+            `UPDATE identities
+             SET balance = balance + ?, last_daily_ts = ?
+             WHERE author_id = ?`,
+            [amt, now, authorId],
+            function (err2) {
+              if (err2) {
+                db.run('ROLLBACK');
+                return reject(err2);
+              }
+              db.run('COMMIT', (err3) => {
+                if (err3) {
+                  db.run('ROLLBACK');
+                  return reject(err3);
+                }
+                resolve({ ok: true, amount: amt });
+              });
+            }
+          );
+        }
+      );
+    });
+  });
+}
+
+function getTopBalances(limit = 10) {
+  const db = getDb();
+  const lim = Math.max(1, Math.min(parseInt(limit || 10, 10), 30));
+  return new Promise((resolve, reject) => {
+    db.all(
+      `
+      SELECT author_id, label, balance
+      FROM identities
+      ORDER BY balance DESC, updated_ts DESC
+      LIMIT ?
+      `,
+      [lim],
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
       }
     );
   });
@@ -448,13 +661,24 @@ module.exports = {
   getLastTsByAuthors,
   getAuthorDaysSince,
   getTextBodiesSince,
+
   setIdentity,
   getIdentity,
   listIdentities,
   findIdentityByLabel,
+
+  ensureIdentity,
+  getBalance,
+  addBalance,
+  transferBalance,
+  claimDaily,
+  getTopBalances,
+
   relabelAuthorEverywhere,
+
   addJoke,
   listJokes,
   countPhraseOccurrences,
+
   dbPath
 };

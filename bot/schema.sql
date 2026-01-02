@@ -24,11 +24,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_id, ts);
 CREATE INDEX IF NOT EXISTS idx_messages_chat_author ON messages(chat_id, author_id);
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts);
 
--- Alias mapping (author_id -> label)
+-- Alias mapping (author_id -> label) + economy fields
 CREATE TABLE IF NOT EXISTS identities (
-  author_id  TEXT PRIMARY KEY,  -- same value you store in messages.author_id
-  label      TEXT NOT NULL,
-  updated_ts INTEGER NOT NULL
+  author_id     TEXT PRIMARY KEY,  -- same value you store in messages.author_id
+  label         TEXT NOT NULL,
+  updated_ts    INTEGER NOT NULL,
+  balance       INTEGER NOT NULL DEFAULT 0,
+  last_daily_ts INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_identities_updated ON identities(updated_ts);
@@ -46,7 +48,7 @@ CREATE TABLE IF NOT EXISTS summaries (
 
 CREATE INDEX IF NOT EXISTS idx_summaries_chat_created ON summaries(chat_id, created_ts);
 
--- NEW: per-group "inside jokes" watchlist
+-- Per-group "inside jokes" watchlist
 CREATE TABLE IF NOT EXISTS jokes (
   chat_id     TEXT NOT NULL,
   phrase      TEXT NOT NULL,
