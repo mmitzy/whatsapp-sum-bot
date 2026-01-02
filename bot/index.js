@@ -316,8 +316,11 @@ client.on('message', async (message) => {
     try {
       const rows = await getRanks(message.from, limit);
       if (!rows.length) return void (await message.reply('No stored messages yet.'));
-      const lines = rows.map((r, i) => `${i + 1}. ${r.who} — ${r.cnt}`);
-      await message.reply(`🏆 Top senders (stored rows)\n${lines.join('\n')}`);
+      const LRM = '\u200E';
+      const lines = rows.map((r, i) => `${LRM}${r.cnt} msg • ${r.who}`);
+      await message.reply(`🏆 Top senders\n` + lines.join('\n'));
+
+
     } catch (e) {
       console.error('getRanks failed:', e);
       await message.reply('Failed to rank (see server logs).');
