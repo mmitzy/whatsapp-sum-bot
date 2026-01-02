@@ -1,33 +1,112 @@
+// bot/config.js
 const path = require('path');
 
 module.exports = {
   // Allowed group IDs, comma-separated
-  // Example: "120363...@g.us,120363...@g.us"
   ALLOWED_GROUP_IDS: (process.env.ALLOWED_GROUP_IDS || '120363422504843223@g.us,120363048222575013@g.us')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean),
 
-  // Admin DM sender IDs allowed to run DM admin commands (!alias/!aliases/!myid)
-  // Example: "196099...@lid,243537...@lid"
+  // Admin DM sender IDs allowed to run DM admin commands
   ADMIN_DM_IDS: (process.env.ADMIN_DM_IDS || '196099767820421@lid,243537614471375@lid')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean),
 
-  // Where all sqlite DB files live (group DBs + identities.sqlite)
-  // Default: <project>/data
   DATA_DIR: process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
 
-  // Identity DB filename (inside DATA_DIR)
   IDENTITIES_DB_FILE: process.env.IDENTITIES_DB_FILE || 'identities.sqlite',
 
-  // python entrypoint for summarization (future step)
   PY_SUMMARY_SCRIPT: process.env.PY_SUMMARY_SCRIPT || '../main.py',
 
-  // safety: don’t let the bot spam (future step)
   MAX_SUMMARY_CHARS: parseInt(process.env.MAX_SUMMARY_CHARS || '3500', 10),
 
-  // LocalAuth clientId (so sessions are stable)
   CLIENT_ID: process.env.CLIENT_ID || 'bot1',
+
+  // ✅ Help text lives here (single source of truth)
+  COMMANDS: [
+    {
+      cmd: '!help',
+      scope: 'Group',
+      desc: 'DMs you the full list of commands and what they do.'
+    },
+    {
+      cmd: '!alias <name>',
+      scope: 'Group',
+      desc: 'Set your alias (nickname) for this bot.'
+    },
+    {
+      cmd: '!ranks [N]',
+      scope: 'Group',
+      desc: 'Shows top senders by stored messages (default 10).'
+    },
+    {
+      cmd: '!count',
+      scope: 'Group',
+      desc: 'Shows how many stored (non-command) messages exist for this group.'
+    },
+    {
+      cmd: '!sum <interval>',
+      scope: 'Group',
+      desc: 'Print messages from last interval (e.g. 10m, 1h30m). Capped at 24h.'
+    },
+    {
+      cmd: '!ghosts',
+      scope: 'Group',
+      desc: 'Shows members who were silent for 7+ days.'
+    },
+    {
+      cmd: '!quote <alias>',
+      scope: 'Group',
+      desc: 'Random quote from a user with this exact alias.'
+    },
+    {
+      cmd: '!streaks',
+      scope: 'Group',
+      desc: 'Consecutive-day streaks (must have messaged today to count).'
+    },
+    {
+      cmd: '!emojis',
+      scope: 'Group',
+      desc: 'Emoji “personality” per user (top emojis, last 30 days).'
+    },
+    {
+      cmd: '!joke <phrase>',
+      scope: 'Group',
+      desc: 'Save a phrase as an inside joke tracker.'
+    },
+    {
+      cmd: '!jokes',
+      scope: 'Group',
+      desc: 'Lists saved joke phrases + usage counts.'
+    },
+
+    // Admin DM-only commands
+    {
+      cmd: '!myid',
+      scope: 'DM (Admin)',
+      desc: 'Prints your WhatsApp id (useful for admin setup).'
+    },
+    {
+      cmd: '!sample [N]',
+      scope: 'DM (Admin)',
+      desc: 'Shows a small sample of last stored messages (default 5).'
+    },
+    {
+      cmd: '!aliases [N]',
+      scope: 'DM (Admin)',
+      desc: 'Lists latest saved aliases (default 20).'
+    },
+    {
+      cmd: '!who <alias>',
+      scope: 'DM (Admin)',
+      desc: 'Finds the current author_id (lid/c.us) for an alias (exact match).'
+    },
+    {
+      cmd: '!alias <author_id> <name>',
+      scope: 'DM (Admin)',
+      desc: 'Force-set alias for a specific author_id and relabel history.'
+    }
+  ]
 };

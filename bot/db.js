@@ -24,7 +24,7 @@ function getDb() {
   const p = dbPath();
   db = new sqlite3.Database(p);
 
-  // Initialize schema.sql (the source of truth)
+  // Initialize schema.sql (source of truth)
   const schemaPath = path.join(__dirname, 'schema.sql');
   const schemaSql = fs.readFileSync(schemaPath, 'utf8');
   db.exec(schemaSql);
@@ -138,12 +138,119 @@ function getMessagesSince(chatId, sinceTs, limit = 5000) {
   return new Promise((resolve, reject) => {
     db.all(
       `
-      SELECT ts, author_name, body, entry_type, media_type
+      SELECT ts, author_id, author_name, body, entry_type, media_type
       FROM messages
       WHERE chat_id = ?
         AND ts >= ?
         AND NOT (entry_type='text' AND body LIKE '!%')
       ORDER BY ts ASC
+      LIMIT ?
+      `,
+      [chatId, sinceTs, lim],
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      }
+    );
+  });
+}
+
+// Random quote from a specific author in a chat
+function getRandomQuoteByAuthor(chatId, authorId) {
+  const db = getDb();
+  return new Promise((resolve, reject) => {
+    db.get(
+      `
+      SELECT ts, author_name, body
+      FROM messages
+      WHERE chat_id = ?
+        AND author_id = ?
+        AND entry_type = 'text'
+        AND body IS NOT NULL
+        AND LENGTH(TRIM(body)) >= 4
+        AND body NOT LIKE '!%'
+      ORDER BY RANDOM()
+      LIMIT 1
+      `,
+      [chatId, authorId],
+      (err, row) => {
+        if (err) return reject(err);
+        resolve(row || null);
+      }
+    );
+  });
+}
+
+// For ghosts: last message time per author within a chat
+function getLastTsByAuthors(chatId, authorIds = []) {
+  const db = getDb();
+  const ids = (authorIds || []).filter(Boolean);
+  if (!ids.length) return Promise.resolve([]);
+
+  // Build (?,?,?,...) placeholders safely
+  const placeholders = ids.map(() => '?').join(',');
+  const params = [chatId, ...ids];
+
+  return new Promise((resolve, reject) => {
+    db.all(
+      `
+      SELECT author_id, MAX(ts) AS last_ts
+      FROM messages
+      WHERE chat_id = ?
+        AND author_id IN (${placeholders})
+        AND NOT (entry_type='text' AND body LIKE '!%')
+      GROUP BY author_id
+      `,
+      params,
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      }
+    );
+  });
+}
+
+// For streaks: distinct message days per author (last N days)
+function getAuthorDaysSince(chatId, sinceTs) {
+  const db = getDb();
+  return new Promise((resolve, reject) => {
+    db.all(
+      `
+      SELECT
+        author_id,
+        date(ts, 'unixepoch', 'localtime') AS day
+      FROM messages
+      WHERE chat_id = ?
+        AND ts >= ?
+        AND NOT (entry_type='text' AND body LIKE '!%')
+      GROUP BY author_id, day
+      `,
+      [chatId, sinceTs],
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      }
+    );
+  });
+}
+
+// For emojis: pull recent text messages (last N seconds)
+function getTextBodiesSince(chatId, sinceTs, limit = 5000) {
+  const db = getDb();
+  const lim = Math.max(1, Math.min(parseInt(limit || 5000, 10), 5000));
+
+  return new Promise((resolve, reject) => {
+    db.all(
+      `
+      SELECT author_id, author_name, body
+      FROM messages
+      WHERE chat_id = ?
+        AND ts >= ?
+        AND entry_type='text'
+        AND body IS NOT NULL
+        AND LENGTH(TRIM(body)) > 0
+        AND body NOT LIKE '!%'
+      ORDER BY ts DESC
       LIMIT ?
       `,
       [chatId, sinceTs, lim],
@@ -240,8 +347,7 @@ function findIdentityByLabel(label, limit = 10) {
 
 /**
  * Update message history in this single DB:
- * set author_name = label where author_id = ?
- * (across all chats)
+ * set author_name = label where author_id = ? (across all chats)
  */
 function relabelAuthorEverywhere(authorId, label) {
   const db = getDb();
@@ -257,14 +363,78 @@ function relabelAuthorEverywhere(authorId, label) {
   });
 }
 
-// For debugging / inspection
-function getSchema() {
+// ---- Jokes API ----
+
+function addJoke(chatId, phrase, addedBy) {
   const db = getDb();
+  const ts = Math.floor(Date.now() / 1000);
+
   return new Promise((resolve, reject) => {
-    db.all(`PRAGMA table_info(messages)`, (err, rows) => {
-      if (err) return reject(err);
-      resolve(rows || []);
-    });
+    db.run(
+      `
+      INSERT INTO jokes (chat_id, phrase, added_by, created_ts)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(chat_id, phrase) DO UPDATE SET
+        created_ts=excluded.created_ts,
+        added_by=excluded.added_by
+      `,
+      [chatId, phrase, addedBy || null, ts],
+      (err) => {
+        if (err) return reject(err);
+        resolve(true);
+      }
+    );
+  });
+}
+
+function listJokes(chatId, limit = 30) {
+  const db = getDb();
+  const lim = Math.max(1, Math.min(parseInt(limit || 30, 10), 100));
+
+  return new Promise((resolve, reject) => {
+    db.all(
+      `
+      SELECT phrase, added_by, created_ts
+      FROM jokes
+      WHERE chat_id = ?
+      ORDER BY created_ts DESC
+      LIMIT ?
+      `,
+      [chatId, lim],
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      }
+    );
+  });
+}
+
+// count occurrences of a phrase in messages (case-insensitive, per chat)
+function countPhraseOccurrences(chatId, phrase, sinceTs = null) {
+  const db = getDb();
+  const needle = `%${String(phrase).toLowerCase()}%`;
+
+  const whereSince = sinceTs ? `AND ts >= ?` : '';
+  const params = sinceTs ? [chatId, needle, sinceTs] : [chatId, needle];
+
+  return new Promise((resolve, reject) => {
+    db.get(
+      `
+      SELECT COUNT(*) AS cnt
+      FROM messages
+      WHERE chat_id = ?
+        AND entry_type='text'
+        AND body IS NOT NULL
+        AND LOWER(body) LIKE ?
+        AND body NOT LIKE '!%'
+        ${whereSince}
+      `,
+      params,
+      (err, row) => {
+        if (err) return reject(err);
+        resolve(row?.cnt ?? 0);
+      }
+    );
   });
 }
 
@@ -274,11 +444,17 @@ module.exports = {
   getRanks,
   getLastRows,
   getMessagesSince,
+  getRandomQuoteByAuthor,
+  getLastTsByAuthors,
+  getAuthorDaysSince,
+  getTextBodiesSince,
   setIdentity,
   getIdentity,
   listIdentities,
   findIdentityByLabel,
   relabelAuthorEverywhere,
-  getSchema,
+  addJoke,
+  listJokes,
+  countPhraseOccurrences,
   dbPath
 };

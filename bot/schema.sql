@@ -4,15 +4,15 @@ PRAGMA synchronous = NORMAL;
 
 -- All messages for all groups live here
 CREATE TABLE IF NOT EXISTS messages (
-  chat_id       TEXT NOT NULL,         -- "...@g.us"
-  msg_id        TEXT NOT NULL,         -- message.id._serialized (plus :text/:media if you split)
-  ts            INTEGER NOT NULL,      -- unix seconds
-  author_id     TEXT,                  -- "...@lid" or "...@c.us"
-  author_name   TEXT,                  -- resolved display at time of insert
-  body          TEXT,
-  has_media     INTEGER DEFAULT 0,
-  entry_type    TEXT DEFAULT 'text',   -- 'text' | 'media'
-  media_type    TEXT,
+  chat_id        TEXT NOT NULL,         -- "...@g.us"
+  msg_id         TEXT NOT NULL,         -- message.id._serialized (plus :text/:media if you split)
+  ts             INTEGER NOT NULL,      -- unix seconds
+  author_id      TEXT,                  -- "...@lid" or "...@c.us"
+  author_name    TEXT,                  -- resolved display at time of insert
+  body           TEXT,
+  has_media      INTEGER DEFAULT 0,
+  entry_type     TEXT DEFAULT 'text',   -- 'text' | 'media'
+  media_type     TEXT,
   media_mimetype TEXT,
   media_filename TEXT,
   media_size     INTEGER,
@@ -45,3 +45,14 @@ CREATE TABLE IF NOT EXISTS summaries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_summaries_chat_created ON summaries(chat_id, created_ts);
+
+-- NEW: per-group "inside jokes" watchlist
+CREATE TABLE IF NOT EXISTS jokes (
+  chat_id     TEXT NOT NULL,
+  phrase      TEXT NOT NULL,
+  added_by    TEXT,
+  created_ts  INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, phrase)
+);
+
+CREATE INDEX IF NOT EXISTS idx_jokes_chat_created ON jokes(chat_id, created_ts);

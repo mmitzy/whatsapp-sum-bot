@@ -14,7 +14,14 @@ const {
   listIdentities,
   findIdentityByLabel,
   relabelAuthorEverywhere,
-  getMessagesSince
+  getMessagesSince,
+  getRandomQuoteByAuthor,
+  getLastTsByAuthors,
+  getAuthorDaysSince,
+  getTextBodiesSince,
+  addJoke,
+  listJokes,
+  countPhraseOccurrences
 } = require('./db');
 
 const ALLOWED_GROUP_IDS = new Set(config.ALLOWED_GROUP_IDS);
@@ -25,6 +32,57 @@ const nameCache = new Map();
 const client = new Client({
   authStrategy: new LocalAuth({ clientId: config.CLIENT_ID })
 });
+
+function buildHelpText() {
+  const cmds = config.COMMANDS || [];
+
+  // Group into sections for readability
+  const group = cmds.filter(c => (c.scope || '').toLowerCase().includes('group'));
+  const dmAdmin = cmds.filter(c => (c.scope || '').toLowerCase().includes('dm (admin)'));
+  const dmAny = cmds.filter(c => (c.scope || '').toLowerCase() === 'group / dm');
+
+  const lines = [];
+  lines.push('🤖 Bot Commands');
+  lines.push('');
+
+  if (dmAny.length) {
+    lines.push('General');
+    for (const c of dmAny) lines.push(`• ${c.cmd} — ${c.desc}`);
+    lines.push('');
+  }
+
+  if (group.length) {
+    lines.push('Group');
+    for (const c of group) lines.push(`• ${c.cmd} — ${c.desc}`);
+    lines.push('');
+  }
+
+  if (dmAdmin.length) {
+    lines.push('DM (Admin only)');
+    for (const c of dmAdmin) lines.push(`• ${c.cmd} — ${c.desc}`);
+    lines.push('');
+  }
+
+  lines.push('Tip: Set your name with !alias <name> so stats look nicer.');
+  return lines.join('\n').trim();
+}
+
+async function dmHelpToSender(message) {
+  const senderId = getSenderId(message);
+  if (!senderId) return false;
+
+  const text = buildHelpText();
+
+  try {
+    // send DM directly (works even if command was used in group)
+    await client.sendMessage(senderId, text);
+    return true;
+  } catch (e) {
+    console.error('Failed to DM help:', e?.message || e);
+    return false;
+  }
+}
+
 
 function stripSuffix(id) {
   return (id || '')
@@ -104,10 +162,35 @@ async function resolveAuthorName(message) {
   return alias;
 }
 
+async function resolveNameById(authorId) {
+  if (!authorId) return 'Unknown';
+  if (nameCache.has(authorId)) return nameCache.get(authorId);
+
+  try {
+    const mapped = await getIdentity(authorId);
+    if (mapped && mapped.trim()) {
+      const clean = mapped.trim();
+      nameCache.set(authorId, clean);
+      return clean;
+    }
+  } catch {}
+
+  const fallback = makeFriendlyAliasFromId(authorId);
+  nameCache.set(authorId, fallback);
+  return fallback;
+}
+
 function sanitizeLabel(label) {
   const s = String(label || '').trim();
   if (!s) return null;
   return s.replace(/\s+/g, ' ').slice(0, 40);
+}
+
+function sanitizePhrase(phrase) {
+  const s = String(phrase || '').trim();
+  if (!s) return null;
+  // allow phrases, but keep them shortish
+  return s.replace(/\s+/g, ' ').slice(0, 60);
 }
 
 // ---- interval parsing for !sum ----
@@ -148,6 +231,25 @@ function fmtTime(tsSec) {
   return `${hh}:${mm}`;
 }
 
+function fmtDaysAgo(nowSec, tsSec) {
+  if (!tsSec) return 'never';
+  const delta = Math.max(0, nowSec - tsSec);
+  const days = Math.floor(delta / 86400);
+  const hours = Math.floor((delta % 86400) / 3600);
+  if (days <= 0) return `${hours}h ago`;
+  return `${days}d ago`;
+}
+
+function dateToYMDLocal(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Emoji extraction (Node supports Unicode property escapes)
+const emojiRe = /\p{Extended_Pictographic}/gu;
+
 // QR
 client.on('qr', (qr) => {
   console.log('QR RECEIVED - scan with WhatsApp (Linked Devices).');
@@ -175,7 +277,42 @@ client.on('message', async (message) => {
   // DM (ADMIN ONLY)
   // ---------------------------
   if (isDm(message)) {
+
+    // !help should work for anyone in DM too
+    if (body === '!help') {
+      const ok = await dmHelpToSender(message);
+      if (!ok) await message.reply('Could not DM you the help text (check privacy settings).');
+      return;
+    }
+
+    // After this, only admin DMs
     if (!isAdminDmSender(message)) return;
+
+    if (body.startsWith('!sample')) {
+      const parts = body.split(/\s+/);
+      const n = parseInt(parts[1] || '5', 10);
+      const limit = Number.isFinite(n) ? Math.min(Math.max(n, 1), 20) : 5;
+
+      try {
+        const rows = await getLastRows(message.from, limit);
+        if (!rows.length) return void (await message.reply('No stored rows yet.'));
+
+        const lines = rows
+        .reverse()
+        .map(r => {
+          const preview = (r.body || '').replace(/\s+/g, ' ').slice(0, 80);
+          const media = r.entry_type === 'media' ? ` [media:${r.media_type || '?'}]` : '';
+          return `- ${r.who}: (${r.entry_type})${media} ${preview}`;
+        })
+        .join('\n');
+
+        await message.reply(`🧪 Sample (last ${rows.length} rows):\n${lines}`);
+      } catch (e) {
+        console.error('getLastRows failed:', e);
+        await message.reply('Failed to sample rows.');
+        }
+      return;
+    }
 
     if (body === '!myid') {
       await message.reply(`Your WhatsApp id (DM): ${message.from}`);
@@ -315,7 +452,296 @@ client.on('message', async (message) => {
     return;
   }
 
-  // !sum <interval> (max 24h) - for now prints messages in that window
+  // !help - sends all commands via DM
+  if (body === '!help') {
+    const ok = await dmHelpToSender(message);
+    if (ok) {
+      await message.reply('📩 Sent you a DM with all commands.');
+    } else {
+      await message.reply("I couldn't DM you. Try DMing me first, then run !help again.");
+    }
+    return;
+  }
+
+  // !ghosts  (silent members)
+  if (body === '!ghosts') {
+    try {
+      const chat = await message.getChat();
+      const participants = (chat?.participants || []).map(p => p.id?._serialized).filter(Boolean);
+
+      if (!participants.length) {
+        await message.reply("Couldn't read participants list (WhatsApp limitation).");
+        return;
+      }
+
+      const lastRows = await getLastTsByAuthors(message.from, participants);
+      const lastMap = new Map(lastRows.map(r => [r.author_id, r.last_ts]));
+
+      const now = Math.floor(Date.now() / 1000);
+      const THRESH = 7 * 86400;
+
+      const ghosts = [];
+      for (const pid of participants) {
+        const lastTs = lastMap.get(pid) || 0;
+        const silentFor = now - lastTs;
+
+        // ignore "me" if you want (optional):
+        // if (pid === chat?.id?._serialized) continue;
+
+        if (!lastTs || silentFor >= THRESH) {
+          const name = await resolveNameById(pid);
+          ghosts.push({ pid, name, lastTs });
+        }
+      }
+
+      ghosts.sort((a, b) => (a.lastTs || 0) - (b.lastTs || 0));
+
+      if (!ghosts.length) {
+        await message.reply('👻 No ghosts! Everyone spoke in the last 7 days.');
+        return;
+      }
+
+      const lines = ghosts.slice(0, 12).map(g => {
+        const age = g.lastTs ? fmtDaysAgo(now, g.lastTs) : 'never';
+        return `• ${g.name} — ${age}`;
+      });
+
+      await message.reply(`👻 Ghosts (silent ≥ 7d)\n` + lines.join('\n'));
+    } catch (e) {
+      console.error('!ghosts failed:', e);
+      await message.reply('Failed to compute ghosts (see server logs).');
+    }
+    return;
+  }
+
+  // !quote <alias>
+  if (body.startsWith('!quote ')) {
+    const alias = body.slice('!quote '.length).trim();
+    if (!alias) {
+      await message.reply(`Usage: !quote <alias>\nExample: !quote Sibo`);
+      return;
+    }
+
+    try {
+      const matches = await findIdentityByLabel(alias, 5);
+      if (!matches.length) {
+        await message.reply(`No exact alias found for: "${alias}".\nTip: set it with !alias <name>`);
+        return;
+      }
+
+      const authorId = matches[0].author_id;
+      const q = await getRandomQuoteByAuthor(message.from, authorId);
+
+      if (!q || !q.body) {
+        await message.reply(`No quote found for "${alias}" in this group yet.`);
+        return;
+      }
+
+      const text = String(q.body).trim().replace(/\s+/g, ' ');
+      const who = matches[0].label || alias;
+      const t = fmtTime(q.ts);
+
+      await message.reply(`📜 Quote (${who}, ${t})\n"${text}"`);
+    } catch (e) {
+      console.error('!quote failed:', e);
+      await message.reply('Failed to fetch quote (see server logs).');
+    }
+    return;
+  }
+
+  // !streaks  (consecutive days with ≥1 message)
+  if (body === '!streaks') {
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const since = now - 60 * 86400; // only need recent days
+
+      const rows = await getAuthorDaysSince(message.from, since);
+      if (!rows.length) {
+        await message.reply('No data yet.');
+        return;
+      }
+
+      // Build map: author_id -> Set(days)
+      const dayMap = new Map();
+      for (const r of rows) {
+        if (!r.author_id || !r.day) continue;
+        if (!dayMap.has(r.author_id)) dayMap.set(r.author_id, new Set());
+        dayMap.get(r.author_id).add(r.day);
+      }
+
+      const todayYMD = dateToYMDLocal(new Date());
+
+      function prevDayYMD(ymd) {
+        const [y, m, d] = ymd.split('-').map(Number);
+        const dt = new Date(y, m - 1, d);
+        dt.setDate(dt.getDate() - 1);
+        return dateToYMDLocal(dt);
+      }
+
+      const streaks = [];
+      for (const [aid, set] of dayMap.entries()) {
+        let streak = 0;
+        let cur = todayYMD;
+
+        // if they haven't written today, streak can still be 0; we'll count back from today only
+        while (set.has(cur)) {
+          streak += 1;
+          cur = prevDayYMD(cur);
+        }
+
+        if (streak > 0) {
+          const name = await resolveNameById(aid);
+          streaks.push({ name, streak });
+        }
+      }
+
+      streaks.sort((a, b) => b.streak - a.streak);
+
+      if (!streaks.length) {
+        await message.reply('🔥 No active streaks today.');
+        return;
+      }
+
+      const top = streaks.slice(0, 10).map((s, i) => `${i + 1}. ${s.name} — ${s.streak} day(s)`);
+      await message.reply(`🔥 Streaks (consecutive days incl. today)\n` + top.join('\n'));
+    } catch (e) {
+      console.error('!streaks failed:', e);
+      await message.reply('Failed to compute streaks (see server logs).');
+    }
+    return;
+  }
+
+  // !emojis  (top 3 emojis per user, last 30 days)
+  if (body === '!emojis') {
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const since = now - 30 * 86400;
+
+      const rows = await getTextBodiesSince(message.from, since, 5000);
+      if (!rows.length) {
+        await message.reply('No text messages to analyze.');
+        return;
+      }
+
+      // author_id -> Map(emoji -> count)
+      const perAuthor = new Map();
+      // author_id -> display
+      const names = new Map();
+
+      for (const r of rows) {
+        const aid = r.author_id;
+        if (!aid) continue;
+        const text = String(r.body || '');
+        const matches = text.match(emojiRe);
+        if (!matches || !matches.length) continue;
+
+        if (!perAuthor.has(aid)) perAuthor.set(aid, new Map());
+        const em = perAuthor.get(aid);
+
+        for (const e of matches) {
+          em.set(e, (em.get(e) || 0) + 1);
+        }
+
+        if (!names.has(aid)) names.set(aid, (r.author_name || '').trim());
+      }
+
+      // build personalities
+      const personalities = [];
+      for (const [aid, emMap] of perAuthor.entries()) {
+        const total = Array.from(emMap.values()).reduce((a, b) => a + b, 0);
+        if (total < 3) continue; // ignore tiny samples
+
+        const top3 = Array.from(emMap.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(x => x[0])
+          .join('');
+
+        const name = await resolveNameById(aid);
+        personalities.push({ name, top3, total });
+      }
+
+      personalities.sort((a, b) => b.total - a.total);
+
+      if (!personalities.length) {
+        await message.reply('No meaningful emoji usage found (need a few more emojis 😄).');
+        return;
+      }
+
+      const lines = personalities.slice(0, 12).map(p => `• ${p.name} → ${p.top3}`);
+      await message.reply(`😂 Emoji personalities (last 30d)\n` + lines.join('\n'));
+    } catch (e) {
+      console.error('!emojis failed:', e);
+      await message.reply('Failed to compute emojis (see server logs).');
+    }
+    return;
+  }
+
+  // !joke <word/phrase>  (adds watch phrase)
+  if (body.startsWith('!joke ')) {
+    const phraseRaw = body.slice('!joke '.length);
+    const phrase = sanitizePhrase(phraseRaw);
+
+    if (!phrase) {
+      await message.reply(`Usage: !joke <word or phrase>\nExample: !joke ben kirk`);
+      return;
+    }
+
+    const senderId = getSenderId(message);
+
+    try {
+      await addJoke(message.from, phrase, senderId);
+
+      // Clear name cache for sender just in case
+      if (senderId) nameCache.delete(senderId);
+
+      await message.reply(`🤣 Saved joke phrase:\n"${phrase}"\nUse !jokes to view the list.`);
+    } catch (e) {
+      console.error('!joke failed:', e);
+      await message.reply('Failed to save joke (see server logs).');
+    }
+    return;
+  }
+
+  // ---------------------------
+  // !jokes — list tracked jokes (LTR-stable)
+  // ---------------------------
+  if (body === '!jokes') {
+    try {
+      const jokes = await listJokes(message.from); // [{ phrase, total_count, last_ts }]
+
+      if (!jokes.length) {
+        await message.reply('🤣 No jokes saved yet.\nUse !joke <phrase> to add one.');
+        return;
+      }
+
+      const LRM = '\u200E'; // force LTR on iOS
+      const since30d = Math.floor(Date.now() / 1000) - 30 * 24 * 3600;
+
+      const lines = [];
+      for (const j of jokes) {
+        const allTime = j.total_count || 0;
+        const last30 =
+        typeof j.count_30d === 'number'
+          ? j.count_30d
+          : await countPhraseOccurrences(message.from, j.phrase, since30d);
+
+        // Format mirrors !ranks:
+        // <count> • <phrase>
+        // Example:
+        // 12 • ben kirk
+        lines.push(`${LRM}${allTime} • ${j.phrase}`);
+      }
+
+      await message.reply(`🤣 Group jokes\n` + lines.join('\n'));
+    } catch (e) {
+      console.error('!jokes failed:', e);
+      await message.reply('Failed to load jokes.');
+    }
+    return;
+  }
+
+  // !sum <interval> (max 24h) - prints messages in that window
   if (body.startsWith('!sum ')) {
     const arg = body.slice('!sum '.length).trim();
     let sec = parseIntervalToSeconds(arg);
@@ -390,39 +816,13 @@ client.on('message', async (message) => {
       const rows = await getRanks(message.from, limit);
       if (!rows.length) return void (await message.reply('No stored messages yet.'));
 
-      // iPhone-safe layout (your chosen solution)
+      // iPhone-safe layout: count first
       const LRM = '\u200E';
       const lines = rows.map(r => `${LRM}${r.cnt} msg • ${r.who}`);
       await message.reply(`🏆 Top senders\n` + lines.join('\n'));
     } catch (e) {
       console.error('getRanks failed:', e);
       await message.reply('Failed to rank (see server logs).');
-    }
-    return;
-  }
-
-  if (body.startsWith('!sample')) {
-    const parts = body.split(/\s+/);
-    const n = parseInt(parts[1] || '5', 10);
-    const limit = Number.isFinite(n) ? Math.min(Math.max(n, 1), 20) : 5;
-
-    try {
-      const rows = await getLastRows(message.from, limit);
-      if (!rows.length) return void (await message.reply('No stored rows yet.'));
-
-      const lines = rows
-        .reverse()
-        .map(r => {
-          const preview = (r.body || '').replace(/\s+/g, ' ').slice(0, 80);
-          const media = r.entry_type === 'media' ? ` [media:${r.media_type || '?'}]` : '';
-          return `- ${r.who}: (${r.entry_type})${media} ${preview}`;
-        })
-        .join('\n');
-
-      await message.reply(`🧪 Sample (last ${rows.length} rows):\n${lines}`);
-    } catch (e) {
-      console.error('getLastRows failed:', e);
-      await message.reply('Failed to sample rows.');
     }
     return;
   }
@@ -435,9 +835,6 @@ client.on('message', async (message) => {
 
   const authorId = getSenderId(message);
   const authorName = await resolveAuthorName(message);
-
-  console.log(`[${message.from}] ${body}`);
-  console.log('Author resolved as:', authorName, '| author_id:', authorId);
 
   if (message.hasMedia) {
     if (body.length > 0) {
