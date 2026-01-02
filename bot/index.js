@@ -8,13 +8,13 @@ const {
   insertRow,
   countMessages,
   getRanks,
-  getSchema,
   getLastRows,
-  dbPathForChat,
   setIdentity,
   getIdentity,
   listIdentities,
-  relabelAuthorEverywhere
+  findIdentityByLabel,
+  relabelAuthorEverywhere,
+  getMessagesSince
 } = require('./db');
 
 const ALLOWED_GROUP_IDS = new Set(config.ALLOWED_GROUP_IDS);
@@ -61,9 +61,7 @@ function getSenderId(message) {
 }
 
 /**
- * Alias-first: mapping wins if it exists (prevents name splits)
- * We use identities table keyed by WA id:
- *   wa_id = "<senderId>" (e.g. 1960...@lid)
+ * Alias-first resolution (prevents name splits)
  */
 async function resolveAuthorName(message) {
   const senderId = getSenderId(message);
@@ -71,7 +69,7 @@ async function resolveAuthorName(message) {
 
   if (nameCache.has(senderId)) return nameCache.get(senderId);
 
-  // 1) Manual mapping first (canonical)
+  // 1) Manual mapping first
   try {
     const mapped = await getIdentity(senderId);
     if (mapped && mapped.trim()) {
@@ -83,7 +81,7 @@ async function resolveAuthorName(message) {
     console.error('getIdentity failed:', e);
   }
 
-  // 2) WhatsApp-provided fields (best-effort)
+  // 2) WhatsApp-provided fields
   try {
     const c = await message.getContact();
     const name =
@@ -100,7 +98,7 @@ async function resolveAuthorName(message) {
     // ignore
   }
 
-  // 3) Friendly alias fallback
+  // 3) Friendly fallback
   const alias = makeFriendlyAliasFromId(senderId);
   nameCache.set(senderId, alias);
   return alias;
@@ -110,6 +108,44 @@ function sanitizeLabel(label) {
   const s = String(label || '').trim();
   if (!s) return null;
   return s.replace(/\s+/g, ' ').slice(0, 40);
+}
+
+// ---- interval parsing for !sum ----
+function parseIntervalToSeconds(input) {
+  const s = String(input || '').trim().toLowerCase();
+  if (!s) return null;
+
+  const re = /(\d+)\s*([smhd])/g;
+  let match;
+  let total = 0;
+  let found = false;
+
+  while ((match = re.exec(s)) !== null) {
+    found = true;
+    const n = parseInt(match[1], 10);
+    const unit = match[2];
+    if (!Number.isFinite(n) || n <= 0) return null;
+
+    if (unit === 's') total += n;
+    else if (unit === 'm') total += n * 60;
+    else if (unit === 'h') total += n * 3600;
+    else if (unit === 'd') total += n * 86400;
+  }
+
+  if (!found) return null;
+  return total;
+}
+
+function clampSecondsTo24h(sec) {
+  if (!sec) return null;
+  return Math.min(sec, 86400);
+}
+
+function fmtTime(tsSec) {
+  const d = new Date(tsSec * 1000);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 
 // QR
@@ -130,17 +166,15 @@ client.on('auth_failure', (msg) => console.log('AUTH FAILURE:', msg));
 client.on('change_state', (state) => console.log('STATE CHANGED:', state));
 
 client.on('message', async (message) => {
-  /* turn on is you want to add a new gc to allowed list
-  if (message.from.endsWith('@g.us')) {
-    console.log('GROUP ID:', message.from);
-  }*/
+  // uncomment to discover group ids
+  // if (message.from.endsWith('@g.us')) console.log('GROUP ID:', message.from);
+
   const body = (message.body || '').trim();
 
   // ---------------------------
-  // DM COMMANDS
+  // DM (ADMIN ONLY)
   // ---------------------------
   if (isDm(message)) {
-    // Admin-only DM commands
     if (!isAdminDmSender(message)) return;
 
     if (body === '!myid') {
@@ -159,7 +193,7 @@ client.on('message', async (message) => {
           await message.reply('No aliases saved yet.');
           return;
         }
-        const lines = rows.map(r => `${r.wa_id} -> ${r.label}`);
+        const lines = rows.map(r => `${r.author_id} -> ${r.label}`);
         await message.reply(`📒 Aliases (latest ${rows.length}):\n` + lines.join('\n'));
       } catch (e) {
         console.error('listIdentities failed:', e);
@@ -168,14 +202,206 @@ client.on('message', async (message) => {
       return;
     }
 
-    /**
-     * ADMIN-ONLY:
-     * !alias <lid_or_cus> <name>
-     * Example:
-     *   !alias 196099767820421@lid Sibo
-     */
+    // !who <alias>
+    if (body.startsWith('!who ')) {
+      const alias = body.slice('!who '.length).trim();
+      if (!alias) {
+        await message.reply('Usage: !who <alias>\nExample: !who דניאל סנטר 13');
+        return;
+      }
 
-    if (body.startsWith('!sample')) {
+      try {
+        const rows = await findIdentityByLabel(alias, 10);
+        if (!rows.length) {
+          await message.reply(`No author_id found for alias: "${alias}"`);
+          return;
+        }
+        const lines = rows.map(r => `${r.label}  ->  ${r.author_id}`);
+        await message.reply(`Matches (latest first):\n` + lines.join('\n'));
+      } catch (e) {
+        console.error('!who failed:', e);
+        await message.reply('Failed to search alias (see server logs).');
+      }
+      return;
+    }
+
+    // !alias <author_id> <name>  (admin only)
+    if (body.startsWith('!alias ')) {
+      const parts = body.split(/\s+/);
+      const targetId = (parts[1] || '').trim();
+      const labelRaw = parts.slice(2).join(' ');
+      const label = sanitizeLabel(labelRaw);
+
+      if (!targetId || !label) {
+        await message.reply(
+          `Usage:\n` +
+          `- !alias <author_id> <name>\n` +
+          `Example: !alias 1960...@lid Sibo\n` +
+          `Tip: use !who <alias> to find author_id`
+        );
+        return;
+      }
+
+      if (!targetId.includes('@') || (!targetId.endsWith('@lid') && !targetId.endsWith('@c.us'))) {
+        await message.reply('❌ author_id must end with @lid or @c.us');
+        return;
+      }
+
+      try {
+        await setIdentity(targetId, label);
+
+        const res = await relabelAuthorEverywhere(targetId, label);
+        const totalChanged = res?.changed ?? 0;
+
+        nameCache.delete(targetId);
+
+        await message.reply(
+          `✅ Saved mapping + updated history:\n` +
+          `${targetId} -> ${label}\n` +
+          `Rows updated: ${totalChanged}`
+        );
+      } catch (e) {
+        console.error('alias+relabel failed:', e);
+        await message.reply('Failed to save mapping/update history (see server logs).');
+      }
+      return;
+    }
+
+    return;
+  }
+
+  // ---------------------------
+  // GROUP ONLY
+  // ---------------------------
+  if (!message.from.endsWith('@g.us')) return;
+  if (!ALLOWED_GROUP_IDS.has(message.from)) return;
+
+  // Commands first (don’t insert)
+  if (body === '!ping') return void (await message.reply('pong'));
+  if (body === '!ben') return void (await message.reply('kirk!'));
+
+  // Everyone: !alias <name> sets alias for THEMSELVES
+  if (body.startsWith('!alias ')) {
+    const labelRaw = body.slice('!alias '.length);
+    const label = sanitizeLabel(labelRaw);
+
+    if (!label) {
+      await message.reply(`Usage: !alias <your name>\nExample: !alias Sibo`);
+      return;
+    }
+
+    const senderId = getSenderId(message);
+    if (!senderId) {
+      await message.reply("Couldn't detect your sender id.");
+      return;
+    }
+
+    try {
+      await setIdentity(senderId, label);
+
+      const res = await relabelAuthorEverywhere(senderId, label);
+      const totalChanged = res?.changed ?? 0;
+
+      nameCache.delete(senderId);
+
+      await message.reply(
+        `✅ Alias saved for you: ${label}\n` +
+        `Rows updated: ${totalChanged}`
+      );
+    } catch (e) {
+      console.error('group alias failed:', e);
+      await message.reply('Failed to save alias (see server logs).');
+    }
+    return;
+  }
+
+  // !sum <interval> (max 24h) - for now prints messages in that window
+  if (body.startsWith('!sum ')) {
+    const arg = body.slice('!sum '.length).trim();
+    let sec = parseIntervalToSeconds(arg);
+    sec = clampSecondsTo24h(sec);
+
+    if (!sec) {
+      await message.reply(
+        `Usage: !sum <interval>\n` +
+        `Examples: !sum 1h | !sum 30m | !sum 10s | !sum 1h30m\n` +
+        `Max: 24h`
+      );
+      return;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const since = now - sec;
+
+    try {
+      const rows = await getMessagesSince(message.from, since, 5000);
+      if (!rows.length) {
+        await message.reply(`No messages found in the last ${arg} (capped at 24h).`);
+        return;
+      }
+
+      let out = `🧾 Messages from last ${arg} (max 24h)\n`;
+
+      for (const r of rows) {
+        const who = (r.author_name || 'Unknown').trim();
+        const t = fmtTime(r.ts);
+
+        let line = '';
+        if (r.entry_type === 'media') {
+          line = `[${t}] ${who}: [media:${r.media_type || 'unknown'}]`;
+        } else {
+          const text = (r.body || '').replace(/\s+/g, ' ').trim();
+          if (!text) continue;
+          line = `[${t}] ${who}: ${text}`;
+        }
+
+        if (out.length + line.length + 2 > (config.MAX_SUMMARY_CHARS || 3500)) {
+          out += `\n… (truncated, total rows: ${rows.length})`;
+          break;
+        }
+        out += line + '\n';
+      }
+
+      await message.reply(out.trim());
+    } catch (e) {
+      console.error('!sum failed:', e);
+      await message.reply('Failed to gather messages (see server logs).');
+    }
+    return;
+  }
+
+  if (body === '!count') {
+    try {
+      const cnt = await countMessages(message.from);
+      await message.reply(`Stored rows (excluding commands): ${cnt}`);
+    } catch (e) {
+      console.error('countMessages failed:', e);
+      await message.reply('Failed to count (see server logs).');
+    }
+    return;
+  }
+
+  if (body.startsWith('!ranks')) {
+    const parts = body.split(/\s+/);
+    const n = parseInt(parts[1] || '10', 10);
+    const limit = Number.isFinite(n) ? Math.min(Math.max(n, 3), 30) : 10;
+
+    try {
+      const rows = await getRanks(message.from, limit);
+      if (!rows.length) return void (await message.reply('No stored messages yet.'));
+
+      // iPhone-safe layout (your chosen solution)
+      const LRM = '\u200E';
+      const lines = rows.map(r => `${LRM}${r.cnt} msg • ${r.who}`);
+      await message.reply(`🏆 Top senders\n` + lines.join('\n'));
+    } catch (e) {
+      console.error('getRanks failed:', e);
+      await message.reply('Failed to rank (see server logs).');
+    }
+    return;
+  }
+
+  if (body.startsWith('!sample')) {
     const parts = body.split(/\s+/);
     const n = parseInt(parts[1] || '5', 10);
     const limit = Number.isFinite(n) ? Math.min(Math.max(n, 1), 20) : 5;
@@ -201,143 +427,17 @@ client.on('message', async (message) => {
     return;
   }
 
-    if (body === '!count') {
-    try {
-      const cnt = await countMessages(message.from);
-      await message.reply(`Stored rows (excluding commands): ${cnt}`);
-    } catch (e) {
-      console.error('countMessages failed:', e);
-      await message.reply('Failed to count (see server logs).');
-    }
-    return;
-  }
-
-    if (body.startsWith('!alias ')) {
-      const parts = body.split(/\s+/);
-      const targetId = (parts[1] || '').trim();
-      const labelRaw = parts.slice(2).join(' ');
-      const label = sanitizeLabel(labelRaw);
-
-      if (!targetId || !label) {
-        await message.reply(
-          `Usage:\n` +
-          `- !alias <wa_id> <name>\n` +
-          `Example: !alias 1960...@lid Sibo`
-        );
-        return;
-      }
-
-      // enforce "admin-only if targeting someone":
-      if (!targetId.includes('@') || (!targetId.endsWith('@lid') && !targetId.endsWith('@c.us'))) {
-        await message.reply('❌ wa_id must end with @lid or @c.us');
-        return;
-      }
-
-      try {
-        await setIdentity(targetId, label);
-
-        const results = await relabelAuthorEverywhere(targetId, label);
-        const totalChanged = results.reduce((sum, r) => sum + (r.changed || 0), 0);
-
-        nameCache.delete(targetId);
-
-        await message.reply(
-          `✅ Saved mapping + updated history:\n` +
-          `${targetId} -> ${label}\n` +
-          `Rows updated across group DBs: ${totalChanged}`
-        );
-      } catch (e) {
-        console.error('alias+relabel failed:', e);
-        await message.reply('Failed to save mapping/update history (see server logs).');
-      }
-      return;
-    }
-
-    return;
-  }
-
   // ---------------------------
-  // GROUP HANDLING ONLY BELOW
+  // STORE MESSAGE
   // ---------------------------
-  if (!message.from.endsWith('@g.us')) return;
-  if (!ALLOWED_GROUP_IDS.has(message.from)) return;
-
-  // Commands first (don’t insert)
-  if (body === '!ping') return void (await message.reply('pong'));
-  if (body === '!ben') return void (await message.reply('kirk!'));
-
-  /**
-   * EVERYONE (GROUP):
-   * !alias <name>
-   *
-   * Saves alias for the SENDER ONLY (author id from the group message).
-   * This prevents abuse like setting alias for other people.
-   */
-  if (body.startsWith('!alias ')) {
-    const labelRaw = body.slice('!alias '.length);
-    const label = sanitizeLabel(labelRaw);
-
-    if (!label) {
-      await message.reply(`Usage: !alias <your name>\nExample: !alias Sibo`);
-      return;
-    }
-
-    const senderId = getSenderId(message); // group sender id
-    if (!senderId) {
-      await message.reply("Couldn't detect your sender id.");
-      return;
-    }
-
-    try {
-      await setIdentity(senderId, label);
-
-      // update history across all group DBs so ranks/sample won't split
-      const results = await relabelAuthorEverywhere(senderId, label);
-      const totalChanged = results.reduce((sum, r) => sum + (r.changed || 0), 0);
-
-      nameCache.delete(senderId);
-
-      await message.reply(
-        `✅ Alias saved for you: ${label}\n` +
-        `Rows updated across group DBs: ${totalChanged}`
-      );
-    } catch (e) {
-      console.error('group alias failed:', e);
-      await message.reply('Failed to save alias (see server logs).');
-    }
-    return;
-  }
-
-  if (body.startsWith('!ranks')) {
-    const parts = body.split(/\s+/);
-    const n = parseInt(parts[1] || '10', 10);
-    const limit = Number.isFinite(n) ? Math.min(Math.max(n, 3), 30) : 10;
-
-    try {
-      const rows = await getRanks(message.from, limit);
-      if (!rows.length) return void (await message.reply('No stored messages yet.'));
-      const LRM = '\u200E';
-      const lines = rows.map((r, i) => `${LRM}${r.cnt} msg • ${r.who}`);
-      await message.reply(`🏆 Top senders\n` + lines.join('\n'));
-
-
-    } catch (e) {
-      console.error('getRanks failed:', e);
-      await message.reply('Failed to rank (see server logs).');
-    }
-    return;
-  }
-
-  // Store non-command messages
   const ts = message.timestamp;
   const baseId = message.id._serialized;
 
-  const authorId = getSenderId(message); // use same logic as aliasing
+  const authorId = getSenderId(message);
   const authorName = await resolveAuthorName(message);
 
   console.log(`[${message.from}] ${body}`);
-  console.log('DB file:', dbPathForChat(message.from));
-  console.log('Author resolved as:', authorName, '| raw author_id:', authorId);
+  console.log('Author resolved as:', authorName, '| author_id:', authorId);
 
   if (message.hasMedia) {
     if (body.length > 0) {
