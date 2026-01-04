@@ -191,25 +191,57 @@ function clampSecondsTo24h(sec) {
 // Emoji regex (good-enough pragmatic)
 const emojiRe = /[\p{Extended_Pictographic}]/gu;
 
+function buildHelpText() {
+  const cmds = config.COMMANDS || [];
+
+  // Group into sections for readability
+  const group = cmds.filter(c => (c.scope || '').toLowerCase().includes('group'));
+  const dmAdmin = cmds.filter(c => (c.scope || '').toLowerCase().includes('dm (admin)'));
+  const dmAny = cmds.filter(c => (c.scope || '').toLowerCase() === 'group / dm');
+
+  const lines = [];
+  lines.push('🤖 Bot Commands');
+  lines.push('');
+
+  if (dmAny.length) {
+    lines.push('General');
+    for (const c of dmAny) lines.push(`• ${c.cmd} — ${c.desc}`);
+    lines.push('');
+  }
+
+  if (group.length) {
+    lines.push('Group');
+    for (const c of group) lines.push(`• ${c.cmd} — ${c.desc}`);
+    lines.push('');
+  }
+
+  if (dmAdmin.length) {
+    lines.push('DM (Admin only)');
+    for (const c of dmAdmin) lines.push(`• ${c.cmd} — ${c.desc}`);
+    lines.push('');
+  }
+
+  lines.push('Tip: Set your name with !alias <name> so stats look nicer.');
+  return lines.join('\n').trim();
+}
+
 // DM help command: send full commands list
 async function dmHelpToSender(message) {
+  const senderId = getSenderId(message);
+  if (!senderId) return false;
+
+  const text = buildHelpText();
+
   try {
-    const senderId = getSenderId(message);
-    if (!senderId) return false;
-
-    const lines = (config.COMMANDS || []).map(c => {
-      const scope = c.scope ? `(${c.scope})` : '';
-      return `• ${c.cmd} ${scope}\n  - ${c.desc}`;
-    });
-
-    const txt = `🤖 Bot Commands\n\n${lines.join('\n')}`;
-    await client.sendMessage(senderId, txt);
+    // send DM directly (works even if command was used in group)
+    await client.sendMessage(senderId, text);
     return true;
   } catch (e) {
-    console.error('dmHelpToSender failed:', e);
+    console.error('Failed to DM help:', e?.message || e);
     return false;
   }
 }
+
 
 // resolve name by author_id (uses identities first)
 async function resolveNameById(authorId) {
