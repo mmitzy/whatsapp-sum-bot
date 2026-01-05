@@ -252,6 +252,56 @@ async function resolveNameById(authorId) {
   return makeFriendlyAliasFromId(authorId);
 }
 
+// Cache lid -> phone to avoid repeated WA calls
+const lidPhoneCache = new Map();
+
+/**
+ * Resolve phone number from a WhatsApp LID
+ * @param {string} lid - e.g. "196099767820421@lid"
+ * @returns {string|null} phone number like "0501234567" or null
+ */
+async function resolvePhoneFromLid(lid) {
+  if (!lid || !lid.endsWith('@lid')) return null;
+
+  if (lidPhoneCache.has(lid)) {
+    return lidPhoneCache.get(lid);
+  }
+
+  try {
+    const res = await client.getContactLidAndPhone([lid]);
+
+    const first = Array.isArray(res) ? res[0] : null;
+    if (!first) {
+      lidPhoneCache.set(lid, null);
+      return null;
+    }
+
+    // Usually something like "972501234567@c.us"
+    const raw =
+      first.phone ||
+      first.phoneNumber ||
+      first.waId ||
+      null;
+
+    if (!raw) {
+      lidPhoneCache.set(lid, null);
+      return null;
+    }
+
+    // normalize
+    let phone = raw.replace(/@c\.us$/i, '').replace(/[^\d]/g, '');
+    if (phone.startsWith('972')) phone = '0' + phone.slice(3);
+
+    lidPhoneCache.set(lid, phone);
+    return phone;
+  } catch (e) {
+    console.error('resolvePhoneFromLid failed:', e);
+    lidPhoneCache.set(lid, null);
+    return null;
+  }
+}
+
+
 // ---------------------------
 // BLACKJACK (in-memory per chat+player)
 // ---------------------------
@@ -356,6 +406,8 @@ client.on('ready', () => {
   console.log('Allowed groups:', Array.from(ALLOWED_GROUP_IDS));
   console.log('Admin DM IDs:', Array.from(ADMIN_DM_IDS));
   console.log('Data dir:', config.DATA_DIR);
+
+  lidPhoneCache.clear();
 });
 
 client.on('disconnected', (reason) => console.log('Client was disconnected:', reason));
@@ -403,9 +455,9 @@ client.on('message', async (message) => {
     // !who <alias> (admin)
     if (body.startsWith('!who ')) {
       const alias = body.slice('!who '.length).trim();
-      if (!alias) {
-        await message.reply('Usage: !who <alias>\nExample: !who Sibo');
-        return;
+        if (!alias) {
+          await message.reply('Usage: !who <alias>\nExample: !who Sibo');
+          return;
       }
 
       try {
@@ -415,14 +467,29 @@ client.on('message', async (message) => {
           return;
         }
 
-        const lines = matches.map(m => `${m.label} -> ${m.author_id}`);
+        // Resolve phones (best-effort)
+        const lines = [];
+        for (const m of matches) {
+          const aid = m.author_id || '';
+          let phone = null;
+
+          if (aid.endsWith('@c.us')) {
+            phone = normalizePhone(aid); // from c.us directly
+          } else if (aid.endsWith('@lid')) {
+              phone = await resolvePhoneFromLid(aid);
+            }
+
+          lines.push(`${m.label} -> ${aid} (${phone || 'N/A'})`);
+        }
+
         await message.reply(`🔎 Matches:\n` + lines.join('\n'));
-      } catch (e) {
-        console.error('!who failed:', e);
-        await message.reply('Failed to lookup alias (see server logs).');
-      }
+        } catch (e) {
+            console.error('!who failed:', e);
+            await message.reply('Failed to lookup alias (see server logs).');
+          }
       return;
     }
+
 
     // !sample [N]
     if (body.startsWith('!sample')) {
@@ -849,8 +916,13 @@ client.on('message', async (message) => {
         return;
       }
 
-      const top = streaks.slice(0, 10).map((s, i) => `${i + 1}. ${s.name} — ${s.streak} day(s)`);
+      const LRM = '\u200E';
+      const top = streaks
+        .slice(0, 10)
+        .map((s, i) => `${LRM}${s.streak} day(s) • ${s.name}`);
+
       await message.reply(`🔥 Streaks (consecutive days incl. today)\n` + top.join('\n'));
+
     } catch (e) {
       console.error('!streaks failed:', e);
       await message.reply('Failed to compute streaks (see server logs).');
