@@ -182,6 +182,37 @@ function parseIntervalToSeconds(s) {
   return matched ? total : null;
 }
 
+const checkedCusIds = new Set();
+function isDefaultUserAlias(label) {
+  if (!label) return true;
+  const s = String(label).trim();
+  return /^User\b/i.test(s); 
+}
+
+async function maybeUpgradeAliasToPhoneFast(authorId, resolvedName) {
+  if (!authorId?.endsWith('@c.us')) return false;
+
+  // only if still default-ish
+  if (!isDefaultUserAlias(resolvedName)) return false;
+
+  // only check once per run
+  if (checkedCusIds.has(authorId)) return false;
+  checkedCusIds.add(authorId);
+
+  const phone = normalizePhone(authorId);
+  if (!phone) return false;
+
+  const current = await getIdentity(authorId);
+  if (current && !isDefaultUserAlias(current)) return false;
+
+  await setIdentity(authorId, phone);
+  await relabelAuthorEverywhere(authorId, phone);
+  nameCache.delete(authorId);
+
+  return true;
+}
+
+
 function clampSecondsTo24h(sec) {
   const s = parseInt(sec, 10);
   if (!Number.isFinite(s) || s <= 0) return null;
@@ -355,6 +386,33 @@ function fmtCards(cards, hideFirst = false) {
 function isBlackjack(cards) {
   return cards.length === 2 && handValue(cards) === 21;
 }
+
+async function bjUpdateMessage(game, fallbackMessage) {
+  const txt = bjRender(game);
+
+  // Try edit the existing bot message first
+  if (game.botMsg?.edit) {
+    try {
+      const edited = await game.botMsg.edit(txt);
+      if (edited) {
+        game.botMsg = edited; // keep the latest reference if library returns a new Message
+        return true;
+      }
+    } catch (e) {
+      // fall through to fallback reply
+    }
+  }
+
+  // Fallback: send a new message (rare)
+  try {
+    const sent = await fallbackMessage.reply(txt);
+    game.botMsg = sent;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 
 function calcPayout(game) {
   // returns delta to apply to balance (positive = win, negative = lose)
@@ -1172,15 +1230,17 @@ client.on('message', async (message) => {
         authorId,
         bet,
         createdTs: Date.now(),
-        state: 'playing', // playing | done
+        state: 'playing',
         player: [drawCard(), drawCard()],
         dealer: [drawCard(), drawCard()],
         canDouble: true,
         result: null,
         resultText: '',
+        botMsg: null,          
         replyMsgId: null,
         timeoutHandle: null
       };
+
 
       // Natural blackjack checks
       const pBJ = isBlackjack(game.player);
@@ -1210,6 +1270,7 @@ client.on('message', async (message) => {
       }
 
       const sent = await message.reply(bjRender(game));
+      game.botMsg = sent;
       game.replyMsgId = sent.id?._serialized || null;
 
       // expiration
@@ -1226,12 +1287,7 @@ client.on('message', async (message) => {
           await addBalance(authorId, g.bet); // refund bet
 
           // try edit the original message if possible
-          const finalTxt = bjRender(g);
-          if (sent?.edit) {
-            await sent.edit(finalTxt);
-          } else {
-            await message.reply(finalTxt);
-          }
+          await bjUpdateMessage(g, message);
 
           bjGames.delete(key);
         } catch (e) {
@@ -1273,16 +1329,17 @@ client.on('message', async (message) => {
         game.state = 'done';
         game.result = 'bust';
         game.resultText = `Busted (${pv}). You lose.`;
+      }
 
+      // Try to edit the bot's original reply
+      await bjUpdateMessage(game, message);
+
+      // If busted, end the game AFTER updating the message once
+      if (game.state === 'done') {
         clearTimeout(game.timeoutHandle);
         bjGames.delete(key);
       }
 
-      const newTxt = bjRender(game);
-      // Try to edit the bot's original reply
-      try {
-        await message.reply(newTxt); // fallback if edit isn't available reliably
-      } catch {}
     });
 
     if (!ok) {
@@ -1325,9 +1382,9 @@ client.on('message', async (message) => {
       if (payout > 0) await addBalance(game.authorId, payout);
 
       clearTimeout(game.timeoutHandle);
+      await bjUpdateMessage(game, message);
       bjGames.delete(key);
 
-      await message.reply(bjRender(game));
     });
 
     if (!ok) {
@@ -1365,8 +1422,8 @@ client.on('message', async (message) => {
         game.resultText = `Busted (${pv}) after double. You lose.`;
 
         clearTimeout(game.timeoutHandle);
+        await bjUpdateMessage(game, message);
         bjGames.delete(key);
-        await message.reply(bjRender(game));
         return;
       }
 
@@ -1398,7 +1455,7 @@ client.on('message', async (message) => {
       clearTimeout(game.timeoutHandle);
       bjGames.delete(key);
 
-      await message.reply(bjRender(game));
+      await bjUpdateMessage(game, message);
     });
 
     if (!ok) {
@@ -1415,7 +1472,19 @@ client.on('message', async (message) => {
   const baseId = message.id._serialized;
 
   const authorId = getSenderId(message);
-  const authorName = await resolveAuthorName(message);
+
+  // first resolve name
+  let authorName = await resolveAuthorName(message);
+
+  // if we can see @c.us and the alias is still default "User ...", upgrade to phone (one-time per user)
+  try {
+    await maybeUpgradeAliasToPhoneFast(authorId, authorName);
+    // if upgraded, resolve again so we store the new phone label
+    authorName = await resolveAuthorName(message);
+    } catch (e) {
+      console.error('maybeUpgradeAliasToPhoneFast failed:', e);
+    }
+
 
   if (message.hasMedia) {
     if (body.length > 0) {
