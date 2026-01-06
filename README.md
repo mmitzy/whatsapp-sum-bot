@@ -12,6 +12,7 @@ group commands:
 !ranks - Top 10 senders by stored messages
 !ranks N - Top N senders (max 30)
 !alias Your Name	Alias your own WhatsApp ID
+!sum <interval> - Sums messages sent on the last <interval> using a local LLM. Currently just prints them
 
 Notes:
 
@@ -24,6 +25,7 @@ Group must be in ALLOWED_GROUP_IDS
 
 dm admin only commands: 
 
+!who <alias> - gives you a lid of an alias. Used for first alias initialization of another user
 !sample	Show - last 5 stored entries
 !sample N - Show last N stored entries (max 20)
 !count - Number of stored messages (excluding commands)
