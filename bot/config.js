@@ -24,6 +24,8 @@ module.exports = {
 
   CLIENT_ID: process.env.CLIENT_ID || 'bot1',
 
+  MAX_SUMMARY_CHARS: 1500,
+
   // ✅ Help text lives here (single source of truth)
   COMMANDS: [
   {

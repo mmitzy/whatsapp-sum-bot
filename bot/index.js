@@ -1,7 +1,8 @@
 // bot/index.js
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
-
+const path = require('path');
+const { runPythonSummary } = require('./summary_bridge');
 const config = require('./config');
 
 const {
@@ -1098,7 +1099,7 @@ client.on('message', async (message) => {
     return;
   }
 
-  // !sum <interval> (max 24h) - prints messages in that window
+    // !sum <interval> (max 24h) - AI summary via Python bridge
   if (body.startsWith('!sum ')) {
     const arg = body.slice('!sum '.length).trim();
     let sec = parseIntervalToSeconds(arg);
@@ -1123,7 +1124,9 @@ client.on('message', async (message) => {
         return;
       }
 
-      let out = `🧾 Messages from last ${arg} (max 24h)\n`;
+      // Build transcript (same as your output, but as input to LLM)
+      let transcript = '';
+      const maxTranscriptChars = 12000;
 
       for (const r of rows) {
         const who = (r.author_name || 'Unknown').trim();
@@ -1138,14 +1141,32 @@ client.on('message', async (message) => {
           line = `[${t}] ${who}: ${text}`;
         }
 
-        if (out.length + line.length + 2 > (config.MAX_SUMMARY_CHARS || 3500)) {
-          out += `\n… (truncated, total rows: ${rows.length})`;
+        if (transcript.length + line.length + 2 > maxTranscriptChars) {
+          transcript += `\n… (truncated, total rows: ${rows.length})`;
           break;
         }
-        out += line + '\n';
+
+        transcript += line + '\n';
       }
 
-      await message.reply(out.trim());
+      const maxOut = config.MAX_SUMMARY_CHARS;
+      const pyScriptPath = path.join(__dirname, '..', 'main.py');
+
+      let summary;
+      try {
+        summary = await runPythonSummary(pyScriptPath, {
+          transcript,
+          interval_label: arg,
+          max_chars: maxOut
+        });
+      } catch (e) {
+        console.error('Python summarizer failed:', e);
+        await message.reply('⚠️ AI summary failed (see server logs).');
+        return;
+      }
+
+      await message.reply(`🧠 Summary (last ${arg})\n${summary}`);
+
     } catch (e) {
       console.error('!sum failed:', e);
       await message.reply('Failed to gather messages (see server logs).');
