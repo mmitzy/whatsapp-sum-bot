@@ -32,6 +32,8 @@ module.exports = {
 
   MAX_SUMMARY_CHARS: 1500,
 
+  BJ_MAX_HANDS: 4,
+
   // ✅ Help text lives here (single source of truth)
   COMMANDS: [
   {
@@ -135,6 +137,11 @@ module.exports = {
     cmd: '!double',
     scope: 'Group',
     desc: 'Blackjack: double your bet, draw once, then stand.'
+  },
+  {
+    cmd: '!split',
+    scope: 'Group',
+    desc: 'Blackjack: split your hand into two (if possible).'
   },
 
   // Admin DM-only commands

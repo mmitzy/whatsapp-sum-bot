@@ -79,9 +79,13 @@ function isAdminGroupSender(message) {
  *  - message.from is the other party id
  */
 function getSenderId(message) {
-  if (message.from.endsWith('@g.us')) return message.author || null;
-  return message.from || null;
+  const from = message?.from;
+  if (!from) return null;
+
+  if (from.endsWith('@g.us')) return message.author || null;
+  return from;
 }
+
 
 /**
  * Alias-first: mapping wins if it exists (prevents name splits)
@@ -461,28 +465,169 @@ function calcPayout(game) {
   return 0;
 }
 
+// ---------------------------
+// BLACKJACK COMMANDS (Split + Re-split, single-message updates)
+// ---------------------------
+
+const BJ_MAX_HANDS = config.BJ_MAX_HANDS; // resplit cap (common casino rules: up to 4 hands)
+
+function fmtNet(n) {
+  const sign = n > 0 ? '+' : '';
+  return `${sign}${n}₪`;
+}
+
+
+function bjOutcomeIcon(outcome) {
+  if (outcome === 'win') return ' ✅';
+  if (outcome === 'push') return ' 🟰';
+  if (outcome === 'lose') return ' ❌';
+  if (outcome === 'bust') return ' 💥';
+  return '';
+}
+
+
+// --- Split-capable renderer (REQUIRED if your old bjRender uses game.player)
+// Split-safe renderer: outcome icons ONLY when game is done
 function bjRender(game) {
-  const pv = handValue(game.player);
+  const header = `🃏 Blackjack — Base Bet: ${game.baseBet}₪${(game.hands?.length || 0) > 1 ? ' (Split)' : ''}`;
+
   const dv = handValue(game.dealer);
+  const dealerLine =
+    game.state === 'playing'
+      ? `Dealer: ${fmtCards(game.dealer, true)}`
+      : `Dealer: ${fmtCards(game.dealer)}  (${dv})`;
 
-  const header = `🃏 Blackjack — Bet: ${game.bet}₪`;
-  const dealerLine = game.state === 'playing'
-    ? `Dealer: ${fmtCards(game.dealer, true)}`
-    : `Dealer: ${fmtCards(game.dealer)}  (${dv})`;
+  const handLines = (game.hands || []).map((h, i) => {
+    const pv = handValue(h);
+    const bet = game.handBets?.[i] ?? game.baseBet;
 
-  const playerLine = `You:    ${fmtCards(game.player)}  (${pv})`;
+    const marker =
+      game.state === 'playing' && i === game.activeHand ? '👉 ' : '   ';
+
+    // ✅ IMPORTANT: icons only after the round is fully resolved
+    // While playing: show nothing (no ✅/❌/🟰/💥 before dealer reveal)
+    const mark =
+      game.state === 'done' ? bjOutcomeIcon(game.handOutcome?.[i]) : '';
+
+    return `${marker}Hand ${i + 1} (${bet}₪): ${fmtCards(h)}  (${pv})${mark}`;
+  });
 
   let footer = '';
   if (game.state === 'playing') {
+    const canDouble = !!game.canDouble?.[game.activeHand];
+    const canSplit = bjCanSplit(game);
+
     footer =
       `\nCommands: !hit  !stand` +
-      (game.canDouble ? `  !double` : '') +
+      (canDouble ? `  !double` : '') +
+      (canSplit ? `  !split` : '') +
       `\n⏳ Ends if not finished within ${Math.floor(BJ_MAX_MS / 1000)}s`;
   } else {
     footer = `\nResult: ${game.resultText}`;
   }
 
-  return `${header}\n${dealerLine}\n${playerLine}${footer}`;
+  return `${header}\n${dealerLine}\n${handLines.join('\n')}${footer}`;
+}
+
+// --- Hand helpers
+function bjCurrentHand(game) {
+  return game.hands[game.activeHand];
+}
+
+function bjMoveToNextHand(game) {
+  for (let i = 0; i < game.hands.length; i++) {
+    if (!game.handDone[i]) {
+      game.activeHand = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+// --- Re-split eligibility
+function bjCanSplit(game) {
+  if (!game || game.state !== 'playing') return false;
+  if (!Array.isArray(game.hands) || !Array.isArray(game.handBets)) return false;
+
+  // cap number of hands
+  if (game.hands.length >= (game.maxHands || BJ_MAX_HANDS)) return false;
+
+  const h = game.hands[game.activeHand];
+  if (!h || h.length !== 2) return false;
+
+  // must be same rank
+  return h[0]?.r && h[1]?.r && h[0].r === h[1].r;
+}
+
+// --- Resolve dealer + payout across all hands (bets already deducted)
+async function bjResolveAndPayout(game) {
+  while (handValue(game.dealer) < 17) {
+    game.dealer.push(drawCard());
+  }
+
+  const dv = handValue(game.dealer);
+
+  const parts = [];
+  let anyWin = false;
+  let net = 0; // ✅ NEW
+
+  for (let i = 0; i < game.hands.length; i++) {
+    const pv = handValue(game.hands[i]);
+    const bet = game.handBets[i];
+
+    let res = 'lose';
+
+    if (pv > 21) res = 'bust';
+    else if (dv > 21) res = 'win';
+    else if (pv > dv) res = 'win';
+    else if (pv === dv) res = 'push';
+    else res = 'lose';
+
+    game.handOutcome[i] = res;
+
+    // ✅ net accounting (bets already deducted)
+    if (res === 'win') net += bet;
+    else if (res === 'push') net += 0;
+    else net -= bet;
+
+    // payouts
+    if (res === 'win') {
+      anyWin = true;
+      await addBalance(game.authorId, bet * 2);
+    } else if (res === 'push') {
+      await addBalance(game.authorId, bet);
+    }
+
+    const label =
+      res === 'win' ? `Win (${pv} vs ${dv})` :
+      res === 'push' ? `Push (${pv} vs ${dv})` :
+      res === 'bust' ? `Bust (${pv})` :
+      `Lose (${pv} vs ${dv})`;
+
+    parts.push(`Hand ${i + 1}: ${label}`);
+  }
+
+  game.net = net; // ✅ store if you want later
+
+  game.state = 'done';
+  game.result = anyWin ? 'done_win' : 'done';
+  game.resultText = parts.join(' • ') + `\nNet: ${fmtNet(net)}`;
+}
+
+
+// --- Action wrapper
+async function withGame(message, actionFn) {
+  if (!message?.from) return null;
+
+  const authorId = getSenderId(message);
+  if (!authorId) return null;
+
+  const key = bjKey(message.from, authorId);
+  const game = bjGames.get(key);
+  if (!game || game.state !== 'playing') return null;
+
+  await actionFn(game, key);
+  return true;
 }
 // ---------------------------
 
@@ -1286,10 +1431,8 @@ client.on('message', async (message) => {
 
     const key = bjKey(message.from, authorId);
 
-    // prevent overlapping games
     if (bjGames.has(key)) {
-      const g = bjGames.get(key);
-      await message.reply(`You already have a game running.\nUse !hit / !stand / !double\nOr wait for it to expire.`);
+      await message.reply(`You already have a game running.\nUse !hit / !stand / !double / !split\nOr wait for it to expire.`);
       return;
     }
 
@@ -1303,49 +1446,58 @@ client.on('message', async (message) => {
         return;
       }
 
-      // Deduct bet immediately
+      // Deduct initial bet immediately
       await addBalance(authorId, -bet);
 
       const game = {
         chatId: message.from,
         authorId,
-        bet,
+        baseBet: bet,          // keep original bet for display
+        maxHands: BJ_MAX_HANDS,
+
         createdTs: Date.now(),
         state: 'playing',
-        player: [drawCard(), drawCard()],
+
+        hands: [[drawCard(), drawCard()]],
+        handBets: [bet],
+        handDone: [false],
+        canDouble: [true],
+        activeHand: 0,
+        
+        handOutcome: [], // 'win' | 'push' | 'lose' | 'bust' (filled when game ends)
+
+
         dealer: [drawCard(), drawCard()],
-        canDouble: true,
         result: null,
         resultText: '',
-        botMsg: null,          
+
+        botMsg: null,
         replyMsgId: null,
         timeoutHandle: null
       };
 
-
-      // Natural blackjack checks
-      const pBJ = isBlackjack(game.player);
+      // Natural blackjack checks only for the initial unsplit hand
+      const pBJ = isBlackjack(game.hands[0]);
       const dBJ = isBlackjack(game.dealer);
 
       if (pBJ || dBJ) {
         game.state = 'done';
+
         if (pBJ && dBJ) {
           game.result = 'push';
-          game.resultText = `Push (both blackjack). You get ${game.bet}₪ back.`;
+          game.resultText = `Push (both blackjack). You get ${bet}₪ back.`;
+          await addBalance(authorId, bet);
         } else if (pBJ) {
           game.result = 'player_blackjack';
-          game.resultText = `Blackjack! You win (3:2). You get ${Math.floor(game.bet * 2.5)}₪.`;
+          const payout = Math.floor(bet * 2.5);
+          game.resultText = `Blackjack! You win (3:2). You get ${payout}₪.`;
+          await addBalance(authorId, payout);
         } else {
           game.result = 'dealer_blackjack';
           game.resultText = `Dealer has blackjack. You lose.`;
         }
 
-        // payout
-        const payout = calcPayout(game);
-        if (payout > 0) await addBalance(authorId, payout);
-
-        const txt = bjRender(game);
-        await message.reply(txt);
+        await message.reply(bjRender(game));
         bjGames.delete(key);
         return;
       }
@@ -1357,19 +1509,18 @@ client.on('message', async (message) => {
       // expiration
       game.timeoutHandle = setTimeout(async () => {
         try {
-          // If still exists + still playing, force-end (push bet back)
           const g = bjGames.get(key);
           if (!g || g.state !== 'playing') return;
 
           g.state = 'done';
           g.result = 'push';
-          g.resultText = `⏱️ Timed out. Game ended as Push. You get ${g.bet}₪ back.`;
+          g.resultText = `⏱️ Timed out. Game ended as Push. You get your bet(s) back.`;
 
-          await addBalance(authorId, g.bet); // refund bet
+          // refund all bets deducted so far
+          const refund = (g.handBets || []).reduce((a, b) => a + b, 0);
+          if (refund > 0) await addBalance(g.authorId, refund);
 
-          // try edit the original message if possible
           await bjUpdateMessage(g, message);
-
           bjGames.delete(key);
         } catch (e) {
           console.error('BJ timeout handler failed:', e);
@@ -1379,6 +1530,7 @@ client.on('message', async (message) => {
 
       bjGames.set(key, game);
       return;
+
     } catch (e) {
       console.error('!blackjack failed:', e);
       await message.reply('Failed to start blackjack (see server logs).');
@@ -1387,161 +1539,173 @@ client.on('message', async (message) => {
     }
   }
 
-  // helper: handle action for existing game
-  async function withGame(actionFn) {
-    const authorId = getSenderId(message);
-    if (!authorId) return null;
-    const key = bjKey(message.from, authorId);
-    const game = bjGames.get(key);
-    if (!game || game.state !== 'playing') return null;
-
-    await actionFn(game, key);
-    return true;
-  }
-
+  // ---------------------------
   // !hit
+  // ---------------------------
   if (body === '!hit') {
-    const ok = await withGame(async (game, key) => {
-      game.player.push(drawCard());
-      game.canDouble = false;
+    const ok = await withGame(message, async (game, key) => {
+    const h = bjCurrentHand(game);
+    h.push(drawCard());
+    game.canDouble[game.activeHand] = false;
 
-      const pv = handValue(game.player);
-      if (pv > 21) {
-        game.state = 'done';
-        game.result = 'bust';
-        game.resultText = `Busted (${pv}). You lose.`;
+    const pv = handValue(h);
+
+    if (pv > 21) {
+      game.handDone[game.activeHand] = true;
+
+      // if there is another hand, move to it
+      if (bjMoveToNextHand(game)) {
+        await bjUpdateMessage(game, message);
+        return;
       }
 
-      // Try to edit the bot's original reply
-      await bjUpdateMessage(game, message);
-
-      // If busted, end the game AFTER updating the message once
-      if (game.state === 'done') {
-        clearTimeout(game.timeoutHandle);
-        bjGames.delete(key);
-      }
-
-    });
-
-    if (!ok) {
-      await message.reply('No active blackjack game. Start with: !blackjack <bet>');
-    }
-    return;
-  }
-
-  // !stand
-  if (body === '!stand') {
-    const ok = await withGame(async (game, key) => {
-      game.canDouble = false;
-
-      // Dealer plays
-      while (handValue(game.dealer) < 17) {
-        game.dealer.push(drawCard());
-      }
-
-      const pv = handValue(game.player);
-      const dv = handValue(game.dealer);
-
+      // ✅ No more hands and we busted => end game now (dealer does NOT play)
       game.state = 'done';
-
-      if (dv > 21) {
-        game.result = 'player_win';
-        game.resultText = `Dealer busted (${dv}). You win! You get ${game.bet * 2}₪.`;
-      } else if (pv > dv) {
-        game.result = 'player_win';
-        game.resultText = `You win ${pv} vs ${dv}! You get ${game.bet * 2}₪.`;
-      } else if (pv === dv) {
-        game.result = 'push';
-        game.resultText = `Push ${pv} vs ${dv}. You get ${game.bet}₪ back.`;
-      } else {
-        game.result = 'dealer_win';
-        game.resultText = `Dealer wins ${dv} vs ${pv}. You lose.`;
-      }
-
-      // payout
-      const payout = calcPayout(game);
-      if (payout > 0) await addBalance(game.authorId, payout);
+      game.result = 'bust';
+      game.resultText = `Hand ${game.activeHand + 1}: Bust (${pv}). You lose.`;
 
       clearTimeout(game.timeoutHandle);
       await bjUpdateMessage(game, message);
       bjGames.delete(key);
+      return;
+    }
+
+    // otherwise just update message normally
+    await bjUpdateMessage(game, message);
 
     });
 
-    if (!ok) {
-      await message.reply('No active blackjack game. Start with: !blackjack <bet>');
-    }
+    if (!ok) await message.reply('No active blackjack game. Start with: !blackjack <bet>');
     return;
   }
 
-  // !double
-  if (body === '!double') {
-    const ok = await withGame(async (game, key) => {
-      if (!game.canDouble) {
-        await message.reply("You can't double now (only allowed on your first move).");
+  // ---------------------------
+  // !stand
+  // ---------------------------
+  if (body === '!stand') {
+    const ok = await withGame(message, async (game, key) => {
+      game.canDouble[game.activeHand] = false;
+      game.handDone[game.activeHand] = true;
+
+      // next hand?
+      if (bjMoveToNextHand(game)) {
+        await bjUpdateMessage(game, message);
         return;
       }
 
+      // all done -> resolve
+      await bjResolveAndPayout(game);
+      clearTimeout(game.timeoutHandle);
+      bjGames.delete(key);
+      await bjUpdateMessage(game, message);
+    });
+
+    if (!ok) await message.reply('No active blackjack game. Start with: !blackjack <bet>');
+    return;
+  }
+
+  // ---------------------------
+  // !double (per-hand)
+  // ---------------------------
+  if (body === '!double') {
+    const ok = await withGame(message, async (game, key) => {
+      if (!game.canDouble?.[game.activeHand]) {
+        await message.reply("You can't double now (only allowed on your first move for this hand).");
+        return;
+      }
+
+      const bet = game.handBets[game.activeHand];
       const bal = await getBalance(game.authorId);
-      if (bal < game.bet) {
+      if (bal < bet) {
         await message.reply(`❌ Not enough balance to double.\nYour balance: ${bal}₪`);
         return;
       }
 
-      // Deduct additional bet
-      await addBalance(game.authorId, -game.bet);
-      game.bet *= 2;
-      game.canDouble = false;
+      // Deduct additional bet for THIS hand
+      await addBalance(game.authorId, -bet);
+      game.handBets[game.activeHand] = bet * 2;
+      game.canDouble[game.activeHand] = false;
 
-      // One card only, then stand automatically
-      game.player.push(drawCard());
+      // One card only, then auto-stand this hand
+      const h = bjCurrentHand(game);
+      h.push(drawCard());
 
-      const pv = handValue(game.player);
+      const pv = handValue(h);
       if (pv > 21) {
-        game.state = 'done';
-        game.result = 'bust';
-        game.resultText = `Busted (${pv}) after double. You lose.`;
+        // bust this hand
+        game.handDone[game.activeHand] = true;
 
-        clearTimeout(game.timeoutHandle);
+        if (!bjMoveToNextHand(game)) {
+          await bjResolveAndPayout(game);
+          clearTimeout(game.timeoutHandle);
+          bjGames.delete(key);
+        }
+
         await bjUpdateMessage(game, message);
-        bjGames.delete(key);
         return;
       }
 
-      // Dealer plays out
-      while (handValue(game.dealer) < 17) {
-        game.dealer.push(drawCard());
+      // stand this hand
+      game.handDone[game.activeHand] = true;
+
+      if (bjMoveToNextHand(game)) {
+        await bjUpdateMessage(game, message);
+        return;
       }
 
-      const dv = handValue(game.dealer);
-
-      game.state = 'done';
-      if (dv > 21) {
-        game.result = 'player_win';
-        game.resultText = `Dealer busted (${dv}). You win! You get ${game.bet * 2}₪.`;
-      } else if (pv > dv) {
-        game.result = 'player_win';
-        game.resultText = `You win ${pv} vs ${dv}! You get ${game.bet * 2}₪.`;
-      } else if (pv === dv) {
-        game.result = 'push';
-        game.resultText = `Push ${pv} vs ${dv}. You get ${game.bet}₪ back.`;
-      } else {
-        game.result = 'dealer_win';
-        game.resultText = `Dealer wins ${dv} vs ${pv}. You lose.`;
-      }
-
-      const payout = calcPayout(game);
-      if (payout > 0) await addBalance(game.authorId, payout);
-
+      await bjResolveAndPayout(game);
       clearTimeout(game.timeoutHandle);
       bjGames.delete(key);
+      await bjUpdateMessage(game, message);
+    });
+
+    if (!ok) await message.reply('No active blackjack game. Start with: !blackjack <bet>');
+    return;
+  }
+
+  // ---------------------------
+  // !split (supports re-splitting)
+  // ---------------------------
+  if (body === '!split') {
+    const ok = await withGame(message, async (game, key) => {
+      if (!bjCanSplit(game)) {
+        await message.reply("You can't split now. (Only allowed when the current hand has 2 equal cards, and you haven't hit yet.)");
+        return;
+      }
+
+      // Need extra bet equal to the current hand's bet (NOT necessarily base bet if doubled earlier)
+      const currentBet = game.handBets[game.activeHand];
+
+      const bal = await getBalance(game.authorId);
+      if (bal < currentBet) {
+        await message.reply(`❌ Not enough balance to split.\nNeed: ${currentBet}₪\nYour balance: ${bal}₪`);
+        return;
+      }
+
+      // Deduct bet for the new hand
+      await addBalance(game.authorId, -currentBet);
+
+      const i = game.activeHand;
+      const [c1, c2] = game.hands[i];
+
+      // Replace current hand with [c1, new card]
+      game.hands[i] = [c1, drawCard()];
+
+      // Insert new hand right after with [c2, new card]
+      game.hands.splice(i + 1, 0, [c2, drawCard()]);
+
+      // Insert parallel arrays entries
+      game.handBets.splice(i + 1, 0, currentBet);
+      game.handDone.splice(i + 1, 0, false);
+      game.canDouble.splice(i + 1, 0, true);
+
+      // Current hand remains active (play it first), and you can double it (casino-dependent; we allow)
+      game.canDouble[i] = true;
 
       await bjUpdateMessage(game, message);
     });
 
-    if (!ok) {
-      await message.reply('No active blackjack game. Start with: !blackjack <bet>');
-    }
+    if (!ok) await message.reply('No active blackjack game. Start with: !blackjack <bet>');
     return;
   }
  
