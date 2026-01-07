@@ -8,8 +8,10 @@ function runPythonSummary(pyScriptPath, payload) {
     const pythonExe = path.join(__dirname, '..', 'venv', 'Scripts', 'python.exe');
 
     const py = spawn(pythonExe, [pyScriptPath, '--summarize'], {
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
     });
+
 
     let out = '';
     let err = '';
