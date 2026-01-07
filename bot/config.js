@@ -39,6 +39,11 @@ module.exports = {
     desc: 'Set your alias (nickname) for this bot.'
   },
   {
+    cmd: '!summary <interval>',
+    scope: 'Group',
+    desc: 'Get a summary of messages from the last interval (e.g. 10m, 1h30m). Capped at 24h.'
+  },
+  {
     cmd: '!ranks [N]',
     scope: 'Group',
     desc: 'Shows top senders by stored messages (default 10).'
