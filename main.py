@@ -116,7 +116,7 @@ def summarize_with_gemini(transcript: str, interval_label: str, max_chars: int) 
     client = genai.Client(api_key=api_key)
 
     prompt = f"""
-You are a WhatsApp group chat summarizer.
+You are a WhatsApp group chat summarizer called "Ben Kirk/Agent Ben".
 
 IMPORTANT: Write the entire summary in Hebrew.
 Use natural, informal Hebrew suitable for WhatsApp.

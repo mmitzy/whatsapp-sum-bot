@@ -3,7 +3,7 @@ const path = require('path');
 
 module.exports = {
   // Allowed group IDs, comma-separated
-  ALLOWED_GROUP_IDS: (process.env.ALLOWED_GROUP_IDS || '120363422504843223@g.us,120363048222575013@g.us')
+  ALLOWED_GROUP_IDS: (process.env.ALLOWED_GROUP_IDS || '120363422504843223@g.us,120363048222575013@g.us,120363423071939359@g.us')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean),
@@ -13,6 +13,12 @@ module.exports = {
     .split(',')
     .map(s => s.trim())
     .filter(Boolean),
+
+  // Allowed spam groups
+  ALLOWED_SPAM_GROUP_IDS: (process.env.ALLOWED_SPAM_GROUP_IDS || '120363422504843223@g.us, 120363423071939359@g.us')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean),  
 
   DATA_DIR: process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
 
@@ -136,6 +142,11 @@ module.exports = {
     cmd: '!myid',
     scope: 'DM (Admin)',
     desc: 'Prints your WhatsApp id (useful for admin setup).'
+  },
+  {
+    cmd: '!groupid',
+    scope: 'DM (Admin)',
+    desc: 'Prints the current group id (useful for admin setup).'
   },
   {
     cmd: '!sample [N]',

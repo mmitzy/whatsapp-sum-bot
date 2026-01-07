@@ -64,6 +64,13 @@ function isAdminDmSender(message) {
   return ADMIN_DM_IDS.has(message.from);
 }
 
+function isAdminGroupSender(message) {
+  if (!message.from?.endsWith('@g.us')) return false;
+  if (!message.author) return false;
+
+  return ADMIN_DM_IDS.has(message.author);
+}
+
 /**
  * In a group:
  *  - message.from   = group id (...@g.us)
@@ -190,6 +197,30 @@ function isDefaultUserAlias(label) {
   return /^User\b/i.test(s); 
 }
 
+function normalizePhone(authorId) {
+  if (!authorId || typeof authorId !== 'string') return null;
+
+  // Only normalize real phone-based IDs
+  if (!authorId.endsWith('@c.us')) return null;
+
+  // Strip suffix
+  let phone = authorId.replace(/@c\.us$/i, '');
+
+  // Keep digits only
+  phone = phone.replace(/[^\d]/g, '');
+
+  // Optional: Israel-specific normalization (matches your project)
+  if (phone.startsWith('972')) {
+    phone = '0' + phone.slice(3);
+  }
+
+  // Basic sanity check
+  if (phone.length < 8) return null;
+
+  return phone;
+}
+
+
 async function maybeUpgradeAliasToPhoneFast(authorId, resolvedName) {
   if (!authorId?.endsWith('@c.us')) return false;
 
@@ -206,6 +237,7 @@ async function maybeUpgradeAliasToPhoneFast(authorId, resolvedName) {
   const current = await getIdentity(authorId);
   if (current && !isDefaultUserAlias(current)) return false;
 
+  console.log('Upgrading alias for %s to phone %s', authorId, phone);
   await setIdentity(authorId, phone);
   await relabelAuthorEverywhere(authorId, phone);
   nameCache.delete(authorId);
@@ -649,6 +681,34 @@ client.on('message', async (message) => {
       }
       return;
     }
+
+    return;
+  }
+
+  // ---------------------------
+  // GROUP ADMIN COMMANDS (admin only)
+  // ---------------------------
+  if (isAdminGroupSender(message) && body == '!groupid'){
+    const senderId = getSenderId(message);
+    if (!senderId) {
+      await message.reply("Couldn't detect your sender id.");
+      return;
+    }
+
+    const groupId = message.from;
+
+    try {
+      await client.sendMessage(
+        senderId,
+        `📌 Group ID:\n${groupId}`
+      );
+
+      // small confirmation in the group (or remove entirely)
+      await message.reply('📩 Sent you the group ID in DM.');
+    } catch (e) {
+        console.error('!groupid DM failed:', e);
+        await message.reply("I couldn't DM you. Try DMing me first, then run !groupid again.");
+      }
 
     return;
   }
@@ -1205,10 +1265,10 @@ client.on('message', async (message) => {
   }
 
     // ---------------------------
-  // BLACKJACK COMMANDS
+  // BLACKJACK COMMANDS (SPAM)
   // ---------------------------
-
   // Start a game: !blackjack <bet>
+  if (!config.ALLOWED_SPAM_GROUP_IDS.includes(message.from)) return;
   if (body.startsWith('!blackjack')) {
     const parts = body.split(/\s+/);
     const bet = parseInt(parts[1] || '', 10);
@@ -1484,8 +1544,7 @@ client.on('message', async (message) => {
     }
     return;
   }
-
-
+ 
   // ---------------------------
   // STORE MESSAGE
   // ---------------------------
