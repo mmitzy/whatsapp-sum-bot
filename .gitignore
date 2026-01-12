@@ -215,3 +215,6 @@ package*
 
 # DB
 data/
+
+# more useless version files
+.python-version

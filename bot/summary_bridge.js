@@ -1,10 +1,17 @@
+// bot/summary_bridge.js
 const { spawn } = require('child_process');
+const path = require('path');
 
 function runPythonSummary(pyScriptPath, payload) {
   return new Promise((resolve, reject) => {
-    const py = spawn('python', [pyScriptPath, '--summarize'], {
-      stdio: ['pipe', 'pipe', 'pipe']
+    // Use venv python so packages are found
+    const pythonExe = path.join(__dirname, '..', 'venv', 'Scripts', 'python.exe');
+
+    const py = spawn(pythonExe, [pyScriptPath, '--summarize'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
     });
+
 
     let out = '';
     let err = '';

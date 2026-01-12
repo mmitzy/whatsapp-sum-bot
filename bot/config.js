@@ -3,7 +3,7 @@ const path = require('path');
 
 module.exports = {
   // Allowed group IDs, comma-separated
-  ALLOWED_GROUP_IDS: (process.env.ALLOWED_GROUP_IDS || '120363422504843223@g.us,120363048222575013@g.us')
+  ALLOWED_GROUP_IDS: (process.env.ALLOWED_GROUP_IDS || '120363422504843223@g.us,120363048222575013@g.us,120363423071939359@g.us')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean),
@@ -14,6 +14,12 @@ module.exports = {
     .map(s => s.trim())
     .filter(Boolean),
 
+  // Allowed spam groups
+  ALLOWED_SPAM_GROUP_IDS: (process.env.ALLOWED_SPAM_GROUP_IDS || '120363422504843223@g.us, 120363423071939359@g.us')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean),  
+
   DATA_DIR: process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
 
   IDENTITIES_DB_FILE: process.env.IDENTITIES_DB_FILE || 'identities.sqlite',
@@ -23,6 +29,12 @@ module.exports = {
   MAX_SUMMARY_CHARS: parseInt(process.env.MAX_SUMMARY_CHARS || '3500', 10),
 
   CLIENT_ID: process.env.CLIENT_ID || 'bot1',
+
+  MAX_SUMMARY_CHARS: 1500,
+
+  BJ_MAX_HANDS: 4,
+
+  BJ_MAX_MS: 2 * 60 * 1000,
 
   // ✅ Help text lives here (single source of truth)
   COMMANDS: [
@@ -35,6 +47,11 @@ module.exports = {
     cmd: '!alias <name>',
     scope: 'Group',
     desc: 'Set your alias (nickname) for this bot.'
+  },
+  {
+    cmd: '!summary <interval>',
+    scope: 'Group',
+    desc: 'Get a summary of messages from the last interval (e.g. 10m, 1h30m). Capped at 24h.'
   },
   {
     cmd: '!ranks [N]',
@@ -123,12 +140,22 @@ module.exports = {
     scope: 'Group',
     desc: 'Blackjack: double your bet, draw once, then stand.'
   },
+  {
+    cmd: '!split',
+    scope: 'Group',
+    desc: 'Blackjack: split your hand into two (if possible).'
+  },
 
   // Admin DM-only commands
   {
     cmd: '!myid',
     scope: 'DM (Admin)',
     desc: 'Prints your WhatsApp id (useful for admin setup).'
+  },
+  {
+    cmd: '!groupid',
+    scope: 'DM (Admin)',
+    desc: 'Prints the current group id (useful for admin setup).'
   },
   {
     cmd: '!sample [N]',
