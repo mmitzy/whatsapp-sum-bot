@@ -34,6 +34,8 @@ module.exports = {
 
   BJ_MAX_HANDS: 4,
 
+  BJ_MAX_MS: 2 * 60 * 1000,
+
   // ✅ Help text lives here (single source of truth)
   COMMANDS: [
   {
