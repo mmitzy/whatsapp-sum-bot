@@ -214,6 +214,27 @@ Commands (messages starting with `!`) are excluded from analytics queries.
 
 ---
 
+## Deleting Cache Folders
+```bash
+# Make sure node isn't running (CTRL + C)
+Remove-Item -Recurse -Force .wwebjs_auth -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force .wwebjs_cache -ErrorAction SilentlyContinue
+```
+
+## Creating New Cache Folders W/O Deleting
+```bash
+# Make sure node isn't running (CTRL + C)
+Rename-Item .wwebjs_auth .wwebjs_auth.bak -ErrorAction SilentlyContinue
+Rename-Item .wwebjs_cache .wwebjs_cache.bak -ErrorAction SilentlyContinue
+```
+
+## Reinstalling Bot Dependencies
+```bash
+# Make sure node isn't running (CTRL + C)
+Remove-Item -Recurse -Force .\node_modules -ErrorAction SilentlyContinue
+Remove-Item -Force .\package-lock.json -ErrorAction SilentlyContinue
+```
+
 ## Future Ideas
 
 - Plug in an LLM-based summarizer for `!sum` (using OpenAI/Azure/Open-source models).

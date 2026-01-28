@@ -1,4 +1,9 @@
 // bot/index.js
+
+console.log("[BOOT] index.js reached");
+process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e));
+process.on("uncaughtException", (e) => console.error("[uncaughtException]", e));
+
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const path = require('path');
@@ -38,9 +43,66 @@ const ADMIN_DM_IDS = new Set(config.ADMIN_DM_IDS);
 
 const nameCache = new Map();
 
+console.log("[BOOT] before new Client()");
 const client = new Client({
-  authStrategy: new LocalAuth({ clientId: config.CLIENT_ID })
+  authStrategy: new LocalAuth({ clientId: config.CLIENT_ID }),
+
+  puppeteer: {
+    headless: false
+  }
 });
+
+console.log("[BOOT] after new Client()");
+
+client.on("loading_screen", (percent, msg) => {
+  console.log(`[EVENT] loading_screen ${percent}% ${msg}`);
+});
+
+client.on("authenticated", () => {
+  console.log("[EVENT] authenticated");
+});
+
+client.on("change_state", (state) => {
+  console.log("[EVENT] change_state", state);
+});
+
+
+client.on("authenticated", async () => {
+  console.log("[PROBE] authenticated fired; probing in 10s...");
+
+  await new Promise(r => setTimeout(r, 10000));
+
+  try {
+    const state = await client.getState();
+    console.log("[PROBE] getState:", state);
+  } catch (e) {
+    console.log("[PROBE] getState FAILED:", e?.message || e);
+  }
+
+  try {
+    const me = client.info?.wid?._serialized || client.info?.me?._serialized;
+    console.log("[PROBE] client.info.me:", me || "(missing)");
+  } catch (e) {
+    console.log("[PROBE] client.info FAILED:", e?.message || e);
+  }
+
+  try {
+    const chats = await client.getChats();
+    console.log("[PROBE] getChats OK; count =", chats.length);
+  } catch (e) {
+    console.log("[PROBE] getChats FAILED:", e?.message || e);
+  }
+
+  try {
+    const url = await client.pupPage.url();
+    const title = await client.pupPage.title();
+    console.log("[PROBE] page:", title, url);
+  } catch (e) {
+    console.log("[PROBE] page info FAILED:", e?.message || e);
+  }
+});
+
+
 
 function stripSuffix(id) {
   return (id || '')
@@ -1796,4 +1858,6 @@ client.on('message', async (message) => {
   });
 });
 
+console.log("[BOOT] before client.initialize()");
 client.initialize();
+console.log("[BOOT] after client.initialize() (this may print even if init is async)");
