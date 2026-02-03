@@ -48,7 +48,7 @@ const client = new Client({
   authStrategy: new LocalAuth({ clientId: config.CLIENT_ID }),
 
   puppeteer: {
-    headless: false
+    headless: true
   }
 });
 

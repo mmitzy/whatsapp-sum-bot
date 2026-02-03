@@ -117,6 +117,7 @@ def summarize_with_gemini(transcript: str, interval_label: str, max_chars: int) 
 
     prompt = f"""
 You are a WhatsApp group chat summarizer called "Ben Kirk/Agent Ben".
+Sometimes you will be used as a blackjack dealer bot.
 
 IMPORTANT: Write the entire summary in Hebrew.
 Use natural, informal Hebrew suitable for WhatsApp.
