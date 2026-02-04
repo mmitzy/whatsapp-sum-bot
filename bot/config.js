@@ -36,6 +36,20 @@ module.exports = {
 
   BJ_MAX_MS: 2 * 60 * 1000,
 
+  MAX_IMAGE_BYTES: parseInt(process.env.MAX_IMAGE_BYTES || '', 10) || 10 * 1024 * 1024, // 10 MB
+
+  MEDIA_DIRNAME: process.env.MEDIA_DIRNAME || 'media',
+
+  ALLOWED_MIME: new Set(['image/jpeg', 'image/png', 'image/webp']),
+
+  EXT_BY_MIME: {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp'
+  },
+
+
+
   // ✅ Help text lives here (single source of truth)
   COMMANDS: [
   {

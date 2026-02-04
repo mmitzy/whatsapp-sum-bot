@@ -16,14 +16,10 @@ const config = require('./config');
 const DATA_DIR = config.DATA_DIR;
 
 // ---- Config defaults (override via env if you want) ----
-const MEDIA_DIRNAME = process.env.MEDIA_DIRNAME || 'media';
-const MAX_IMAGE_BYTES = parseInt(process.env.MAX_IMAGE_BYTES || '', 10) || 8 * 1024 * 1024; // 8MB
-const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
-const EXT_BY_MIME = {
-  'image/jpeg': 'jpg',
-  'image/png': 'png',
-  'image/webp': 'webp'
-};
+const MEDIA_DIRNAME = config.MEDIA_DIRNAME;
+const MAX_IMAGE_BYTES = config.MAX_IMAGE_BYTES;
+const ALLOWED_MIME = config.ALLOWED_MIME;
+const EXT_BY_MIME = config.EXT_BY_MIME;
 
 function mediaBaseDir() {
   return path.join(DATA_DIR, MEDIA_DIRNAME);
