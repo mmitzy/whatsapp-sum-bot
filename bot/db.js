@@ -27,7 +27,14 @@ function getDb() {
   // Initialize schema.sql (source of truth)
   const schemaPath = path.join(__dirname, 'schema.sql');
   const schemaSql = fs.readFileSync(schemaPath, 'utf8');
-  db.exec(schemaSql);
+  db.exec(schemaSql, (err) => {
+    if (err) {
+      console.error('schema.sql exec failed:', err);
+    } else {
+      console.log('schema.sql applied OK');
+    }
+  });
+
 
   // Lightweight migrations
   db.serialize(() => {
