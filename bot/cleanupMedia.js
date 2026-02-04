@@ -24,8 +24,8 @@ const { deleteLocalRef, mediaBaseDir } = require('./mediaStore');
 const DATA_DIR = config.DATA_DIR;
 const DB_FILE = process.env.DB_FILE || 'bot.sqlite';
 
-const RETENTION_DAYS = parseInt(process.env.MEDIA_RETENTION_DAYS || '', 10) || 30;
-const DRY_RUN = (process.env.MEDIA_CLEANUP_DRY_RUN || '').toLowerCase() === 'true';
+const RETENTION_DAYS = config.RETENTION_DAYS;
+const DRY_RUN = config.DRY_RUN
 
 // If true, keep ref for audit even after deletion (status=deleted).
 // If false, clear ref to avoid dangling pointers.

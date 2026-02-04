@@ -48,7 +48,9 @@ module.exports = {
     'image/webp': 'webp'
   },
 
+  RETENTION_DAYS: parseInt(process.env.MEDIA_RETENTION_DAYS || '', 10) || 30,
 
+  DRY_RUN: (process.env.MEDIA_CLEANUP_DRY_RUN || '').toLowerCase() === 'true',
 
   // ✅ Help text lives here (single source of truth)
   COMMANDS: [
