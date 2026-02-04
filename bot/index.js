@@ -1817,6 +1817,9 @@ client.on('message', async (message) => {
     }
 
 
+  const { insertRow, upsertMediaObject } = require('./db');
+  const { putImageIfAllowed } = require('./mediaStore'); // you implement this
+
   if (message.hasMedia) {
     if (body.length > 0) {
       insertRow(message.from, {
@@ -1830,7 +1833,8 @@ client.on('message', async (message) => {
       });
     }
 
-    insertRow(message.from, {
+    // Default placeholder first (so history is consistent even if download fails)
+    let mediaRow = {
       msg_id: `${baseId}:media`,
       ts,
       author_id: authorId,
@@ -1841,21 +1845,57 @@ client.on('message', async (message) => {
       media_type: message.type || null,
       media_mimetype: null,
       media_filename: null,
-      media_size: null
-    });
+      media_size: null,
+      media_status: 'pending'
+    };
 
+    try {
+      // Photo-only: download and store only images
+      const media = await message.downloadMedia();
+      const mime = media?.mimetype || '';
+
+      mediaRow.media_mimetype = mime;
+
+      if (mime.startsWith('image/')) {
+        const buf = Buffer.from(media.data, 'base64');
+
+        const put = await putImageIfAllowed({
+          bytes: buf,
+          mime,
+          ts,
+          chatId: message.from
+        });
+
+        // put: { ref, sha256, size, mime, width?, height? }
+        const obj = await upsertMediaObject({
+          sha256: put.sha256,
+          kind: 'image',
+          mime: put.mime,
+          size: put.size,
+          width: put.width,
+          height: put.height,
+          storage: 'local',
+          ref: put.ref,
+          created_ts: ts,
+          last_access_ts: ts
+        });
+
+        mediaRow.media_id = obj.media_id;
+        mediaRow.media_ref = obj.ref;
+        mediaRow.media_size = put.size;
+        mediaRow.media_status = 'stored';
+      } else {
+        mediaRow.media_status = 'skipped'; // not a photo
+      }
+    } catch (e) {
+      mediaRow.media_status = 'failed';
+      // optionally: media_error column if you want, or just log
+      console.error('media save failed', e);
+    }
+
+    insertRow(message.from, mediaRow);
     return;
-  }
-
-  insertRow(message.from, {
-    msg_id: baseId,
-    ts,
-    author_id: authorId,
-    author_name: authorName,
-    body,
-    has_media: 0,
-    entry_type: 'text'
-  });
+  };
 });
 
 console.log("[BOOT] before client.initialize()");

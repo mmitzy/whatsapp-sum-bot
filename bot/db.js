@@ -29,7 +29,7 @@ function getDb() {
   const schemaSql = fs.readFileSync(schemaPath, 'utf8');
   db.exec(schemaSql);
 
-  // Lightweight migrations (schema.sql won't ALTER existing tables)
+  // Lightweight migrations
   db.serialize(() => {
     db.all(`PRAGMA table_info(identities)`, (err, cols) => {
       if (err) {
@@ -47,6 +47,22 @@ function getDb() {
         db.run(`ALTER TABLE identities ADD COLUMN last_daily_ts INTEGER`);
       }
     });
+
+    db.all(`PRAGMA table_info(messages)`, (err, cols) => {
+      if (err) return console.error('PRAGMA table_info(messages) failed:', err);
+      const names = new Set((cols || []).map(c => c.name));
+
+      if (!names.has('media_id')) {
+        db.run(`ALTER TABLE messages ADD COLUMN media_id INTEGER`);
+      }
+      if (!names.has('media_ref')) {
+        db.run(`ALTER TABLE messages ADD COLUMN media_ref TEXT`);
+      }
+      if (!names.has('media_status')) {
+        db.run(`ALTER TABLE messages ADD COLUMN media_status TEXT`);
+      }
+    });
+
   });
 
   return db;
@@ -68,25 +84,29 @@ function insertRow(chatId, row) {
     );
   }
 
-  db.run(
-    `INSERT OR IGNORE INTO messages
-      (chat_id, msg_id, ts, author_id, author_name, body, has_media, entry_type,
-       media_type, media_mimetype, media_filename, media_size)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      chatId,
-      row.msg_id,
-      row.ts,
-      row.author_id,
-      row.author_name,
-      row.body,
-      row.has_media ? 1 : 0,
-      row.entry_type || 'text',
-      row.media_type || null,
-      row.media_mimetype || null,
-      row.media_filename || null,
-      row.media_size ?? null
-    ]
+    db.run(
+      `INSERT OR IGNORE INTO messages
+        (chat_id, msg_id, ts, author_id, author_name, body, has_media, entry_type,
+        media_type, media_mimetype, media_filename, media_size,
+        media_id, media_ref, media_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        chatId,
+        row.msg_id,
+        row.ts,
+        row.author_id,
+        row.author_name,
+        row.body,
+        row.has_media ? 1 : 0,
+        row.entry_type || 'text',
+        row.media_type || null,
+        row.media_mimetype || null,
+        row.media_filename || null,
+        row.media_size ?? null,
+        row.media_id ?? null,
+        row.media_ref ?? null,
+        row.media_status ?? null,
+      ]
   );
 }
 
@@ -350,6 +370,8 @@ function ensureIdentity(authorId, labelIfNew = null) {
     );
   });
 }
+
+
 
 function getBalance(authorId) {
   const db = getDb();
@@ -651,6 +673,50 @@ function countPhraseOccurrences(chatId, phrase, sinceTs = null) {
   });
 }
 
+function upsertMediaObject(obj) {
+  const db = getDb();
+  const createdTs = obj.created_ts || Math.floor(Date.now() / 1000);
+
+  return new Promise((resolve, reject) => {
+    db.run(
+      `
+      INSERT INTO media_objects
+        (sha256, kind, mime, size, width, height, storage, ref, status, created_ts, last_access_ts, extra_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stored', ?, ?, ?)
+      ON CONFLICT(sha256) DO UPDATE SET
+        last_access_ts=excluded.last_access_ts
+      `,
+      [
+        obj.sha256,
+        obj.kind || 'image',
+        obj.mime,
+        obj.size,
+        obj.width ?? null,
+        obj.height ?? null,
+        obj.storage || 'local',
+        obj.ref,
+        createdTs,
+        obj.last_access_ts ?? createdTs,
+        obj.extra_json ?? null
+      ],
+      function (err) {
+        if (err) return reject(err);
+
+        // fetch media_id (needed because upsert doesn't return it)
+        db.get(
+          `SELECT media_id, ref FROM media_objects WHERE sha256 = ?`,
+          [obj.sha256],
+          (err2, row) => {
+            if (err2) return reject(err2);
+            resolve(row); // { media_id, ref }
+          }
+        );
+      }
+    );
+  });
+}
+
+
 module.exports = {
   insertRow,
   countMessages,
@@ -680,5 +746,6 @@ module.exports = {
   listJokes,
   countPhraseOccurrences,
 
-  dbPath
+  dbPath,
+  upsertMediaObject
 };

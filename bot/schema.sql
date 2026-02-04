@@ -58,3 +58,23 @@ CREATE TABLE IF NOT EXISTS jokes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jokes_chat_created ON jokes(chat_id, created_ts);
+
+-- Media objects: one row per stored blob (dedupe by sha256)
+CREATE TABLE IF NOT EXISTS media_objects (
+  media_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  sha256         TEXT NOT NULL UNIQUE,
+  kind           TEXT NOT NULL,              -- 'image' (for now)
+  mime           TEXT NOT NULL,              -- image/jpeg, image/png, image/webp
+  size           INTEGER NOT NULL,           -- bytes
+  width          INTEGER,
+  height         INTEGER,
+  storage        TEXT NOT NULL,              -- 'local' now, 'r2' later
+  ref            TEXT NOT NULL,              -- local://images/2026/02/<sha>.jpg  OR  r2://...
+  status         TEXT NOT NULL DEFAULT 'stored',  -- 'stored' | 'deleted' | 'missing'
+  created_ts     INTEGER NOT NULL,
+  last_access_ts INTEGER,
+  extra_json     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_objects_created ON media_objects(created_ts);
+CREATE INDEX IF NOT EXISTS idx_media_objects_last_access ON media_objects(last_access_ts);
